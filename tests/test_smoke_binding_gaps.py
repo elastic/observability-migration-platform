@@ -307,6 +307,58 @@ def _duration_panel(title, decimals, field="v"):
     return panel
 
 
+class ControlSelectionBindingTests(unittest.TestCase):
+    """Smoke must bind ``?var`` to the control's stored selection, as Kibana does.
+
+    K8s Views Global: ``MV_COUNT(?job) == 0 OR MV_CONTAINS(?job, job)`` matched
+    nothing when smoke sent the string ``.*``, so panels with data were "empty".
+    """
+
+    def test_control_param_values(self):
+        controls = [
+            {"variable": "job", "selected": ["node", "kubelet"], "multi": True},
+            {"variable": "cluster", "selected": ["prod"], "multi": False},
+            {"variable": "pod", "selected": [], "multi": True},
+        ]
+        self.assertEqual(smoke.control_param_values(controls), {"job": ["node", "kubelet"], "cluster": "prod"})
+
+    def test_panel_queries_use_the_stored_selection(self):
+        query = "TS metrics-* | WHERE MV_COUNT(?job) == 0 OR MV_CONTAINS(?job, job) | STATS v = SUM(x) BY t"
+        saved = {
+            "id": "d",
+            "attributes": {
+                "title": "D",
+                "panelsJSON": json.dumps([_lens_panel(0, "CPU", query)]),
+                "pinned_panels": {
+                    "panels": {
+                        "c": {
+                            "type": "esql_control",
+                            "config": {
+                                "variable_name": "job", "variable_type": "multi_values",
+                                "esql_query": "FROM m | STATS BY job", "selected_options": ["node"],
+                            },
+                        }
+                    }
+                },
+            },
+        }
+
+        def post(url, params=None, json=None, **kwargs):
+            bound = {k: v for p in json.get("params", []) for k, v in p.items()}
+            if json["query"].startswith("FROM m"):
+                return _FakeResponse({"columns": [{"name": "job", "type": "keyword"}], "values": [["node"]]})
+            value = 1.0 if bound.get("job") == ["node"] else None
+            return _FakeResponse({"columns": [{"name": "v", "type": "double"}], "values": [[value]]})
+
+        session = mock.Mock()
+        session.post.side_effect = post
+        with mock.patch.object(smoke.requests, "Session", return_value=session):
+            result = smoke.inspect_dashboard(saved, "http://es", timeout=30)
+
+        self.assertEqual(result["status"], "clean")
+        self.assertEqual(result["empty_panels"], [])
+
+
 class UnreadableAxisTests(unittest.TestCase):
     """#480: a 0.2 ms series with Kibana 9.6+'s ``decimals: 0`` duration reads "0 ms" on every tick."""
 

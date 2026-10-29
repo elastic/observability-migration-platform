@@ -570,6 +570,7 @@ def validate_esql(
     dsl_filter=None,
     identifier_params=None,
     keep_values=False,
+    control_values=None,
 ):
     materialized_query = materialize_dashboard_time_query(query)
     headers = {"Authorization": f"ApiKey {es_api_key}"} if es_api_key else None
@@ -579,6 +580,10 @@ def validate_esql(
         materialized_query,
         identifier_params=identifier_params,
     )
+    if control_values:
+        params = [
+            {name: control_values.get(name, value) for name, value in param.items()} for param in params
+        ]
     if params:
         body["params"] = params
     if dsl_filter:
@@ -1041,14 +1046,38 @@ def extract_dashboard_controls(attributes):
         variable = str(config.get("variable_name") or config.get("variableName") or "").strip()
         if not query or not variable:
             continue
+        selected = config.get("selected_options")
+        if selected is None:
+            selected = config.get("selectedOptions")
+        multi = (
+            str(config.get("variable_type") or config.get("variableType") or "") == "multi_values"
+            or config.get("single_select", config.get("singleSelect")) is False
+        )
         controls.append(
             {
                 "title": str(config.get("title") or variable),
                 "variable": variable,
                 "query": query,
+                "selected": [v for v in selected or [] if isinstance(v, str | int | float) and not isinstance(v, bool)],
+                "multi": multi,
             }
         )
     return controls
+
+
+def control_param_values(controls):
+    """``{variable: value}`` Kibana sends for each control's default selection.
+
+    Without these, smoke bound every ``?var`` to ``.*``; a query that tests a
+    multi-value control with ``MV_COUNT(?var) == 0`` / ``MV_CONTAINS(?var, f)``
+    then matched nothing and smoke reported an empty panel Kibana does not show.
+    Controls with no default selection are left to the generic default.
+    """
+    values = {}
+    for control in controls:
+        if control.get("selected"):
+            values[control["variable"]] = list(control["selected"]) if control.get("multi") else control["selected"][0]
+    return values
 
 
 def _control_option_count(values):
@@ -1150,6 +1179,7 @@ def binding_gap_hint(
     verify: bool | str = True,
     dsl_filter=None,
     identifier_params=None,
+    control_values=None,
 ):
     """One-line remediation for a label field that has no values in *query*.
 
@@ -1174,6 +1204,7 @@ def binding_gap_hint(
             dsl_filter=dsl_filter,
             identifier_params=identifier_params,
             keep_values=True,
+            control_values=control_values,
         )
         if outcome["status"] != "pass":
             continue
@@ -1203,7 +1234,7 @@ def binding_gap_hint(
 
 
 def inspect_controls(
-    controls, panel_queries, es_url, timeout, es_api_key="", verify: bool | str = True,
+    controls, panel_queries, es_url, timeout, es_api_key="", verify: bool | str = True, control_values=None,
 ):
     """Run each control's options query and flag controls with no options.
 
@@ -1215,8 +1246,11 @@ def inspect_controls(
     apply_tls(session, verify)
     results = []
     for control in controls:
+        # Chained options queries see the other controls' selections, as in Kibana.
+        others = {k: v for k, v in (control_values or {}).items() if k != control["variable"]}
         outcome = validate_esql(
             es_url, control["query"], timeout, es_api_key=es_api_key, session=session, keep_values=True,
+            control_values=others,
         )
         bound, native = _panels_binding_variable(control["variable"], panel_queries)
         record = {
@@ -1235,7 +1269,7 @@ def inspect_controls(
                 record["field"] = missing.group(1)
                 record["hint"] = binding_gap_hint(
                     missing.group(1), control["query"], es_url, timeout,
-                    kind="control", es_api_key=es_api_key, verify=verify,
+                    kind="control", es_api_key=es_api_key, verify=verify, control_values=others,
                 )
         else:
             options = _control_option_count(outcome.get("values"))
@@ -1245,7 +1279,7 @@ def inspect_controls(
                 record["field"] = field_name
                 record["hint"] = binding_gap_hint(
                     field_name, control["query"], es_url, timeout,
-                    kind="control", es_api_key=es_api_key, verify=verify,
+                    kind="control", es_api_key=es_api_key, verify=verify, control_values=others,
                 )
         results.append(record)
     return results
@@ -1422,7 +1456,7 @@ def _runtime_gap_reason(panel: dict) -> str:
 
 def _validate_panel_queries(
     es_url, queries, timeout, es_api_key="", validation_workers=1, verify: bool | str = True,
-    dsl_filter=None, identifier_params=None,
+    dsl_filter=None, identifier_params=None, control_values=None,
 ):
     if not queries:
         return []
@@ -1438,6 +1472,7 @@ def _validate_panel_queries(
             session=session,
             dsl_filter=dsl_filter,
             identifier_params=identifier_params,
+            control_values=control_values,
         )
 
     workers = max(1, int(validation_workers or 1))
@@ -1453,6 +1488,7 @@ def _validate_panel_queries(
                 session=session,
                 dsl_filter=dsl_filter,
                 identifier_params=identifier_params,
+                control_values=control_values,
             )
             for query in queries
         ]
@@ -1508,6 +1544,8 @@ def inspect_dashboard(
             "panels": [],
         }
     dashboard_filter = extract_dashboard_filter_dsl(attributes)
+    dashboard_controls = extract_dashboard_controls(attributes)
+    control_values = control_param_values(dashboard_controls)
     panel_results = []
     failing_panels = []
     empty_panels = []
@@ -1554,6 +1592,7 @@ def inspect_dashboard(
             verify=verify,
             dsl_filter=dashboard_filter,
             identifier_params=identifier_params,
+            control_values=control_values,
         )
         failing = [item for item in validations if item["status"] == "fail"]
         rows = max((item["rows"] for item in validations), default=0)
@@ -1596,6 +1635,7 @@ def inspect_dashboard(
                 binding_gap_hint(
                     name, hint_query, es_url, timeout, kind="panel", es_api_key=es_api_key,
                     verify=verify, dsl_filter=dashboard_filter, identifier_params=identifier_params,
+                    control_values=control_values,
                 )
                 for name in null_columns
             ]
@@ -1616,12 +1656,13 @@ def inspect_dashboard(
             null_series_panels.append(result)
 
     controls = inspect_controls(
-        extract_dashboard_controls(attributes),
+        dashboard_controls,
         panel_queries,
         es_url,
         timeout,
         es_api_key=es_api_key,
         verify=verify,
+        control_values=control_values,
     )
     empty_controls = [control for control in controls if control["status"] in {"no_options", "fail"}]
     layout = analyze_layout(panels)
