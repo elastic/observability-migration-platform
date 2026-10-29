@@ -1447,7 +1447,10 @@ Regardless of which axis triggered it:
 **Same-titled dashboards (`duplicate_id`):** `PUT /api/dashboards/{id}` is an
 upsert, and the dashboard id is the title slug (`obs-migrate-<title-slug>`). Two
 source dashboards sharing a title would therefore land on one id, with the second
-replacing the first and reporting a routine `updated`. Instead:
+replacing the first and reporting a routine `updated`. The same happens to
+different titles that slug to one id ("Kubernetes / Persistent Volumes" and
+"kubernetes-persistent-volumes"), so the check is on the id as well as the
+title. Instead:
 
 - The run appends the same token that made the two dashboards' *artifact stems*
   unique to the second dashboard's id, so artifact `shared_title_dash-beta` is
@@ -1456,9 +1459,10 @@ replacing the first and reporting a routine `updated`. Instead:
   uploaded copies are still addressed by it.
 - Each disambiguation is printed during migration, naming both the id used and
   the plain title slug it is not, because that slug is what you would search for:
-  `'Shared Title' shares its title with another dashboard in this run, so its
-  Kibana dashboard id is disambiguated to 'obs-migrate-shared-title-dash-beta'
-  rather than the plain title slug 'obs-migrate-shared-title'.`
+  `'Shared Title' shares its title, or the dashboard id derived from it, with
+  another dashboard in this run, so its Kibana dashboard id is disambiguated to
+  'obs-migrate-shared-title-dash-beta' rather than the plain title slug
+  'obs-migrate-shared-title'.`
 - If two payloads still resolve to one id in a single upload, the second is
   **not sent** and is reported with status `duplicate_id`. Like `lossy`, it is a
   failure: it never counts toward `uploaded_ok`, so `obs-migrate upload` and

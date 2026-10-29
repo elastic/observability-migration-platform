@@ -5291,6 +5291,19 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
         self.assertEqual(second, ("test_dash-002", "dash-002"))
         self.assertNotEqual(first[0], second[0])
 
+    def test_allocate_artifact_stem_disambiguates_titles_that_share_a_dashboard_id(self):
+        # Distinct stems, same Kibana id slug: the second upload used to be
+        # refused as a duplicate.
+        from observability_migration.targets.kibana.dashboards_api import dashboard_id_for_title
+
+        used_stems: set[str] = set()
+        used_ids: set[str] = set()
+        first = datadog_cli._allocate_artifact_stem("Disk / IO", None, used_stems, used_ids)
+        second = datadog_cli._allocate_artifact_stem("disk-io", None, used_stems, used_ids)
+        self.assertEqual(first[1], "")
+        self.assertNotEqual(second[1], "")
+        self.assertNotEqual(dashboard_id_for_title("Disk / IO", first[1]), dashboard_id_for_title("disk-io", second[1]))
+
     def test_allocate_artifact_stem_uses_numeric_suffix_without_id(self):
         used_stems: set[str] = {"test"}
         stem = datadog_cli._allocate_artifact_stem("Test", None, used_stems)
