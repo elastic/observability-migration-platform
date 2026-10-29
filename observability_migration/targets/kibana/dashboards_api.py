@@ -2773,10 +2773,13 @@ def _duration_series(config: dict[str, Any]) -> list[tuple[str, str, dict[str, A
         for y in layer.get("y") or []:
             if isinstance(y, dict) and (y.get("format") or {}).get("type") == "duration":
                 series.append((query, str(y.get("column") or ""), y))
-    metric = config.get("metric")
-    if isinstance(metric, dict) and (metric.get("format") or {}).get("type") == "duration":
-        query = str((config.get("data_source") or {}).get("query") or "")
-        series.append((query, str(metric.get("column") or ""), metric))
+    # Single-value charts: gauges carry ``metric``; metric tiles a ``metrics``
+    # list (``{"type": "primary", ...}``). Both read the panel-level query.
+    query = str((config.get("data_source") or {}).get("query") or "")
+    candidates = [config.get("metric"), *(config.get("metrics") or [])]
+    for metric in candidates:
+        if isinstance(metric, dict) and (metric.get("format") or {}).get("type") == "duration":
+            series.append((query, str(metric.get("column") or ""), metric))
     return [item for item in series if item[0] and item[1]]
 
 

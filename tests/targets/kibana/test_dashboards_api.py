@@ -3215,6 +3215,30 @@ def test_metric_and_gauge_duration_values_are_fitted_too():
     assert payload["panels"][0]["config"]["metric"]["format"] == {"type": "number", "decimals": 2, "suffix": " ms"}
 
 
+def test_metric_tile_primary_duration_is_fitted():
+    # PostgreSQL Exporter "Average query runtime": a metric tile peaking at
+    # 0.045 ms kept `duration` because only `metric` (gauges) was read.
+    payload = {
+        "panels": [
+            {
+                "grid": {"x": 0, "y": 0, "w": 8, "h": 8},
+                "type": "vis",
+                "config": {
+                    "type": "metric",
+                    "title": "Average query runtime",
+                    "data_source": {"type": "esql", "query": "TS m | KEEP v"},
+                    "metrics": [{"type": "primary", "column": "v", "format": {"type": "duration", "from": "s", "to": "auto"}}],
+                },
+            }
+        ]
+    }
+
+    changes, _session = _fit(payload, _es_rows("v", [0.0000451]))
+
+    assert payload["panels"][0]["config"]["metrics"][0]["format"] == {"type": "number", "decimals": 6, "suffix": " s"}
+    assert len(changes) == 1
+
+
 def test_readable_sub_millisecond_format_units():
     fmt = api._readable_sub_millisecond_format
     assert fmt({"from": "us"}, 120.0) == {"type": "number", "decimals": 1, "suffix": " µs"}
