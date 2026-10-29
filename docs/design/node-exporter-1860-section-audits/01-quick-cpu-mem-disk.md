@@ -37,7 +37,7 @@ Smoke on the migrate artifact used for this upload: `runtime_error_panels: 0`, `
 Grafana first row uses ~24-wide grid (`w: 3` gauges, `w: 2–4` stats). Kibana section uses 48-wide grid with roughly ×2 widths (`w: 6` for Pressure/gauges, stats at `x: 36–44`). Section id `8459ec29-…`, `collapsed: false`.
 
 ### Gauge titles
-IR sets `hide_title: true` on the five gauges and the five stats. Panel chrome titles are empty in the DOM; values still appear on the Lens gauge/metric visuals. Pressure keeps a visible title.
+IR sets `hide_title: true` on the five stats; their values still appear on the Lens metric visuals. The five gauges keep a visible chrome title with a blank gauge label (#482: Kibana draws the gauge label only beside a value, so a hidden title left an empty gauge untitled). Pressure keeps a visible title.
 
 ### Summary reduction
 Grafana panels use `reduceOptions.calcs: ["lastNotNull"]` with `instant: true` PromQL. Kibana equivalents:
@@ -214,7 +214,7 @@ Not IRATE, so `TBUCKET(100)` is appropriate.
 1. **Duplicate** `| EVAL _gauge_min = …` lines on several gauge queries (pack + emitter both append). Harmless but noisy — largely addressed by skipping already-present constants.
 2. ~~**Pressure** color `range_max` / MAX collapse~~ — fixed (penultimate non-null + `* 100` domain); see pack + Phase 5 spot check.
 3. **Root FS `/oldroot`** — keep for this lab; pack comments should note stock Grafana is `/`-only.
-4. Gauge **titles hidden** — matches IR `hide_title: true`; DOM audits must not treat missing title text as “panel missing.”
+4. Stat **titles hidden** — matches IR `hide_title: true`; DOM audits must not treat missing title text as “panel missing.” Gauges show their title (#482).
 
 ---
 

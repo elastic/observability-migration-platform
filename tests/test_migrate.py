@@ -14240,6 +14240,27 @@ class TestDisplayMetadata(unittest.TestCase):
         self.assertEqual(fmt["type"], "number")
         self.assertIn("suffix", fmt)
 
+    def test_enrich_gauge_keeps_title_visible_and_blanks_duplicate_label(self):
+        # #482: Kibana draws a gauge's label only beside a value, so hiding the
+        # chrome title left an empty gauge as an untitled "No results found".
+        from observability_migration.targets.kibana.emit.display import enrich_yaml_panel_display
+        yaml_panel = {
+            "title": "Memory Usage",
+            "esql": {"type": "gauge", "query": "FROM metrics-*", "metric": {"field": "value"}},
+        }
+        enrich_yaml_panel_display(yaml_panel, {"fieldConfig": {"defaults": {"unit": "percent"}}})
+        self.assertNotIn("hide_title", yaml_panel)
+        self.assertEqual(yaml_panel["esql"]["metric"]["label"], "")
+
+    def test_enrich_gauge_keeps_an_explicit_label(self):
+        from observability_migration.targets.kibana.emit.display import enrich_yaml_panel_display
+        yaml_panel = {
+            "title": "Memory Usage",
+            "esql": {"type": "gauge", "query": "FROM metrics-*", "metric": {"field": "value", "label": "Used %"}},
+        }
+        enrich_yaml_panel_display(yaml_panel, {})
+        self.assertEqual(yaml_panel["esql"]["metric"]["label"], "Used %")
+
     def test_enrich_with_metric_labels(self):
         from observability_migration.targets.kibana.emit.display import enrich_yaml_panel_display
         yaml_panel = {
