@@ -951,12 +951,19 @@ class SchemaResolver:
         unescaped physical field names; this method adds its own backticks. Each
         candidate gets a ``c<i>`` COUNT alias and results are mapped back by
         column name, so the mapping is robust to column reordering.
+
+        Presence is counted as ``COUNT(CASE(`f` IS NOT NULL, 1, NULL))``, not
+        ``COUNT(`f`)``: ES|QL rejects COUNT on ``counter_*`` fields, which made
+        every probe of two counters (e.g. Redis hits vs misses) error and read
+        as "unknown", so one-metric-per-document targets (/_prometheus
+        remote-write) were assumed co-located and the panel came back empty.
         """
         if not self._es_url or not candidates:
             return None
         aliases = {f"c{i}": candidate for i, candidate in enumerate(candidates)}
         stats = ", ".join(
-            f"{alias} = COUNT(`{candidate}`)" for alias, candidate in aliases.items()
+            f"{alias} = COUNT(CASE(`{candidate}` IS NOT NULL, 1, NULL))"
+            for alias, candidate in aliases.items()
         )
         query = (
             f"FROM {self._index_pattern} "
