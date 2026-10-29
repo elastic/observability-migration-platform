@@ -12,13 +12,14 @@ import re
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import requests
 
 from observability_migration.core.http import apply_tls
 
-from .esql_validate import _validation_params_for_query, materialize_dashboard_time_query
+from .esql_validate import _iso_z, _validation_params_for_query, materialize_dashboard_time_query
 from .schema import SchemaResolver
 
 DEFAULT_CHROME_CANDIDATES = (
@@ -571,8 +572,13 @@ def validate_esql(
     identifier_params=None,
     keep_values=False,
     control_values=None,
+    time_window=None,
 ):
-    materialized_query = materialize_dashboard_time_query(query)
+    if time_window is not None:
+        seconds = int(time_window.total_seconds())
+        materialized_query = materialize_dashboard_time_query(query, time_from=f"NOW() - {seconds} seconds")
+    else:
+        materialized_query = materialize_dashboard_time_query(query)
     headers = {"Authorization": f"ApiKey {es_api_key}"} if es_api_key else None
     client = session or requests
     body = {"query": materialized_query}
@@ -584,6 +590,12 @@ def validate_esql(
         params = [
             {name: control_values.get(name, value) for name, value in param.items()} for param in params
         ]
+    if time_window is not None:
+        # Native PROMQL keeps ?_tstart/?_tend as date params (see
+        # materialize_dashboard_time_query); bind them to the same window.
+        end = datetime.now(UTC)
+        bounds = {"_tstart": _iso_z(end - time_window), "_tend": _iso_z(end)}
+        params = [{name: bounds.get(name, value) for name, value in param.items()} for param in params]
     if params:
         body["params"] = params
     if dsl_filter:
@@ -1010,6 +1022,31 @@ def _panel_title(panel):
     )
 
 
+_RELATIVE_TIME_RE = re.compile(r"^now-(\d+)([smhdwMy])$")
+_RELATIVE_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800, "M": 2592000, "y": 31536000}
+
+
+def relative_time_window(time_from, time_to="now"):
+    """``now-15m`` → 15 minutes; anything not relative to now → ``None``."""
+    if str(time_to or "now").strip() != "now":
+        return None
+    match = _RELATIVE_TIME_RE.match(str(time_from or "").strip())
+    if not match:
+        return None
+    return timedelta(seconds=int(match.group(1)) * _RELATIVE_UNIT_SECONDS[match.group(2)])
+
+
+def _panel_time_window(panel, dashboard_window):
+    """The window a viewer sees for *panel* on load: its own override, else the dashboard's."""
+    embeddable = panel.get("embeddableConfig") or {}
+    override = embeddable.get("timeRange") or embeddable.get("time_range") or {}
+    if isinstance(override, dict):
+        window = relative_time_window(override.get("from"), override.get("to"))
+        if window is not None:
+            return window
+    return dashboard_window
+
+
 _CONTROL_WILDCARD_OPTIONS = {"", ".*", "*"}
 _UNKNOWN_COLUMN_RE = re.compile(r"Unknown column \[`?([^\]`]+)`?\]")
 
@@ -1180,6 +1217,7 @@ def binding_gap_hint(
     dsl_filter=None,
     identifier_params=None,
     control_values=None,
+    time_window=None,
 ):
     """One-line remediation for a label field that has no values in *query*.
 
@@ -1205,6 +1243,7 @@ def binding_gap_hint(
             identifier_params=identifier_params,
             keep_values=True,
             control_values=control_values,
+            time_window=time_window,
         )
         if outcome["status"] != "pass":
             continue
@@ -1235,6 +1274,7 @@ def binding_gap_hint(
 
 def inspect_controls(
     controls, panel_queries, es_url, timeout, es_api_key="", verify: bool | str = True, control_values=None,
+    time_window=None,
 ):
     """Run each control's options query and flag controls with no options.
 
@@ -1250,7 +1290,7 @@ def inspect_controls(
         others = {k: v for k, v in (control_values or {}).items() if k != control["variable"]}
         outcome = validate_esql(
             es_url, control["query"], timeout, es_api_key=es_api_key, session=session, keep_values=True,
-            control_values=others,
+            control_values=others, time_window=time_window,
         )
         bound, native = _panels_binding_variable(control["variable"], panel_queries)
         record = {
@@ -1270,6 +1310,7 @@ def inspect_controls(
                 record["hint"] = binding_gap_hint(
                     missing.group(1), control["query"], es_url, timeout,
                     kind="control", es_api_key=es_api_key, verify=verify, control_values=others,
+                    time_window=time_window,
                 )
         else:
             options = _control_option_count(outcome.get("values"))
@@ -1280,6 +1321,7 @@ def inspect_controls(
                 record["hint"] = binding_gap_hint(
                     field_name, control["query"], es_url, timeout,
                     kind="control", es_api_key=es_api_key, verify=verify, control_values=others,
+                    time_window=time_window,
                 )
         results.append(record)
     return results
@@ -1456,7 +1498,7 @@ def _runtime_gap_reason(panel: dict) -> str:
 
 def _validate_panel_queries(
     es_url, queries, timeout, es_api_key="", validation_workers=1, verify: bool | str = True,
-    dsl_filter=None, identifier_params=None, control_values=None,
+    dsl_filter=None, identifier_params=None, control_values=None, time_window=None,
 ):
     if not queries:
         return []
@@ -1473,6 +1515,7 @@ def _validate_panel_queries(
             dsl_filter=dsl_filter,
             identifier_params=identifier_params,
             control_values=control_values,
+            time_window=time_window,
         )
 
     workers = max(1, int(validation_workers or 1))
@@ -1489,6 +1532,7 @@ def _validate_panel_queries(
                 dsl_filter=dsl_filter,
                 identifier_params=identifier_params,
                 control_values=control_values,
+                time_window=time_window,
             )
             for query in queries
         ]
@@ -1546,6 +1590,12 @@ def inspect_dashboard(
     dashboard_filter = extract_dashboard_filter_dsl(attributes)
     dashboard_controls = extract_dashboard_controls(attributes)
     control_values = control_param_values(dashboard_controls)
+    # Query the window a viewer sees on load: the saved dashboard range when
+    # the dashboard restores time, else the validator default.
+    dashboard_window = (
+        relative_time_window(attributes.get("timeFrom"), attributes.get("timeTo"))
+        if attributes.get("timeRestore") else None
+    )
     panel_results = []
     failing_panels = []
     empty_panels = []
@@ -1583,6 +1633,7 @@ def inspect_dashboard(
                     unexpected_runtime_gap_panels.append(result)
             continue
 
+        panel_window = _panel_time_window(panel, dashboard_window)
         validations = _validate_panel_queries(
             es_url,
             queries,
@@ -1593,6 +1644,7 @@ def inspect_dashboard(
             dsl_filter=dashboard_filter,
             identifier_params=identifier_params,
             control_values=control_values,
+            time_window=panel_window,
         )
         failing = [item for item in validations if item["status"] == "fail"]
         rows = max((item["rows"] for item in validations), default=0)
@@ -1635,7 +1687,7 @@ def inspect_dashboard(
                 binding_gap_hint(
                     name, hint_query, es_url, timeout, kind="panel", es_api_key=es_api_key,
                     verify=verify, dsl_filter=dashboard_filter, identifier_params=identifier_params,
-                    control_values=control_values,
+                    control_values=control_values, time_window=panel_window,
                 )
                 for name in null_columns
             ]
@@ -1663,6 +1715,7 @@ def inspect_dashboard(
         es_api_key=es_api_key,
         verify=verify,
         control_values=control_values,
+        time_window=dashboard_window,
     )
     empty_controls = [control for control in controls if control["status"] in {"no_options", "fail"}]
     layout = analyze_layout(panels)

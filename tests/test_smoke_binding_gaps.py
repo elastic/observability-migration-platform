@@ -359,6 +359,49 @@ class ControlSelectionBindingTests(unittest.TestCase):
         self.assertEqual(result["empty_panels"], [])
 
 
+class TimeWindowTests(unittest.TestCase):
+    """Smoke queries the window a viewer sees on load, not a fixed hour.
+
+    Node Exporter disk graphs (saved ``now-15m``) peaked at 3 ms in its own
+    window but 0.5 ms in smoke's hour, so smoke flagged an axis Kibana draws fine.
+    """
+
+    def test_relative_time_window(self):
+        self.assertEqual(smoke.relative_time_window("now-15m", "now"), smoke.timedelta(minutes=15))
+        self.assertEqual(smoke.relative_time_window("now-7d"), smoke.timedelta(days=7))
+        self.assertIsNone(smoke.relative_time_window("now-1h", "now-5m"))
+        self.assertIsNone(smoke.relative_time_window("2026-10-01T00:00:00Z"))
+
+    def test_panels_use_their_override_then_the_saved_dashboard_range(self):
+        dashboard_panel = _lens_panel(0, "Disk", "TS m | WHERE @timestamp >= ?_tstart | STATS v = MAX(x)")
+        override_panel = _lens_panel(1, "Clients", "PROMQL index=m start=?_tstart end=?_tend value=(up)")
+        override_panel["embeddableConfig"]["timeRange"] = {"from": "now-1m", "to": "now"}
+        saved = {
+            "id": "d",
+            "attributes": {
+                "title": "D", "timeRestore": True, "timeFrom": "now-15m", "timeTo": "now",
+                "panelsJSON": json.dumps([dashboard_panel, override_panel]),
+            },
+        }
+        seen = []
+
+        def post(url, params=None, json=None, **kwargs):
+            seen.append(json)
+            return _FakeResponse({"columns": [{"name": "v", "type": "double"}], "values": [[1.0]]})
+
+        session = mock.Mock()
+        session.post.side_effect = post
+        with mock.patch.object(smoke.requests, "Session", return_value=session):
+            smoke.inspect_dashboard(saved, "http://es", timeout=30)
+
+        esql, promql = seen
+        self.assertIn("NOW() - 900 seconds", esql["query"])
+        bounds = {k: v for p in promql["params"] for k, v in p.items()}
+        start = smoke.datetime.fromisoformat(bounds["_tstart"].replace("Z", "+00:00"))
+        end = smoke.datetime.fromisoformat(bounds["_tend"].replace("Z", "+00:00"))
+        self.assertEqual(end - start, smoke.timedelta(minutes=1))
+
+
 class UnreadableAxisTests(unittest.TestCase):
     """#480: a 0.2 ms series with Kibana 9.6+'s ``decimals: 0`` duration reads "0 ms" on every tick."""
 

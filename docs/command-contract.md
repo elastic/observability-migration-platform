@@ -366,6 +366,11 @@ against the target, or pass the `--field-profile` that matches your ingest.
   spellings of that label: it names the spelling that returns values (and the
   matching `--field-profile`), or says no spelling has values, i.e. a data gap.
 
+Smoke runs every query in the window a viewer sees on load: a panel's own time
+range override (e.g. "Last 1 minute"), else the dashboard's saved range when it
+restores time, else the validator default (1 hour). Control parameters are bound
+to each control's stored selection, as Kibana sends them.
+
 Separately, a panel whose query returns rows but every value in them is null is
 reported as `empty` (not `pass`) with an `empty_reason`: Kibana shows "No
 results found" for it. The usual cause is a ratio with a zero or missing divisor
