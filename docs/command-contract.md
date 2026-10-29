@@ -374,9 +374,9 @@ results found" for it. The usual cause is a ratio with a zero or missing divisor
 
 Smoke also reads each panel's stored Lens duration formats and reports
 `unreadable_axis_panels` when a duration column's values all sit below what its
-format can show: Kibana 9.7+ stores the Dashboards API `duration` with
+format can show: Kibana 9.6+ stores the Dashboards API `duration` with
 `decimals: 0`, so a series peaking at 0.28 ms reads "0 ms" on every axis tick
-(#480). Dashboards with only that finding get status `has_unreadable_axes`; the
+(#480; upstream [elastic/kibana#301576](https://github.com/elastic/kibana/issues/301576)). Dashboards with only that finding get status `has_unreadable_axes`; the
 merged `unreadable_axis` rollup turns the verification gate Yellow. Uploading
 with an ES URL fits such series to a readable number format.
 

@@ -287,7 +287,7 @@ class HelperTests(unittest.TestCase):
 
 
 def _duration_panel(title, decimals, field="v"):
-    """Lens state as Kibana 9.7 stores the Dashboards API ``duration`` format."""
+    """Lens state as Kibana 9.6+ stores the Dashboards API ``duration`` format."""
     params = {"compact": True, "fromUnit": "seconds", "toUnit": "humanizePrecise"}
     if decimals is not None:
         params["decimals"] = decimals
@@ -308,7 +308,7 @@ def _duration_panel(title, decimals, field="v"):
 
 
 class UnreadableAxisTests(unittest.TestCase):
-    """#480: a 0.2 ms series with Kibana 9.7's ``decimals: 0`` duration reads "0 ms" on every tick."""
+    """#480: a 0.2 ms series with Kibana 9.6+'s ``decimals: 0`` duration reads "0 ms" on every tick."""
 
     def _inspect(self, panel, values):
         saved = {"id": "d", "attributes": {"title": "D", "panelsJSON": json.dumps([panel])}}

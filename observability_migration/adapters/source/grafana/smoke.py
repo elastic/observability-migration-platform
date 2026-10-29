@@ -509,8 +509,9 @@ def _panel_duration_formats(panel):
     """``(field, fromUnit, decimals)`` for each duration-formatted Lens column.
 
     Read from the stored Lens state, i.e. what Kibana will actually render.
-    Kibana 9.7 stores the Dashboards API ``duration`` (``to: auto``) as
-    ``toUnit: humanizePrecise`` with ``decimals: 0``.
+    Kibana 9.6+ stores the Dashboards API ``duration`` (``to: auto``) as
+    ``toUnit: humanizePrecise`` with ``decimals: 0`` (9.5 stored 2;
+    elastic/kibana#301576).
     """
     state = (((panel.get("embeddableConfig") or {}).get("attributes") or {}).get("state") or {})
     found = []
