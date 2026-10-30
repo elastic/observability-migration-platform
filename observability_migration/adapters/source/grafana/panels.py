@@ -773,11 +773,21 @@ def _target_translation_hints(panel, panel_type, target, metric_series_labels=No
 def _inferred_labels_for_target(target, metric_series_labels):
     """Look up a target's metric in the dashboard-wide series-label map."""
     expr = str(target.get("expr", "") or "")
-    for metric in _metrics_in_expr(expr):
+    # ``_metrics_in_expr`` is a set, so iterating it directly made the choice
+    # depend on PYTHONHASHSEED: ``A / on(pod, container) B`` took A's
+    # [container, pod] in some runs and B's [pod] in others. Use source order:
+    # the leftmost operand's labels, which is also what a PromQL one-to-one
+    # binary operation propagates.
+    for metric in sorted(_metrics_in_expr(expr), key=lambda name: (_first_metric_position(expr, name), name)):
         labels = metric_series_labels.get(metric)
         if labels:
             return list(labels)
     return []
+
+
+def _first_metric_position(expr, metric):
+    match = re.search(r"(?<![A-Za-z0-9_:])" + re.escape(metric) + r"(?![A-Za-z0-9_:])", expr)
+    return match.start() if match else len(expr)
 
 
 def _humanize_identifier(raw):
