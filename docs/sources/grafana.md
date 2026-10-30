@@ -1516,13 +1516,17 @@ Use that doc for:
   the metric as a gauge, because only the rule pack's
   `metric_kinds: <metric>: gauge` pin selects the ES|QL gauge analogue
   (`AVG_OVER_TIME` / `MAX_OVER_TIME`). A metric the target types as a gauge
-  keeps native translation and is reported as **migrated with warnings** with a
-  panel note: Elasticsearch evaluates a gauge rate only while the lookback window
-  stays large relative to the dashboard range's bucket step, so such a panel
-  renders at narrow dashboard ranges and errors at wider ones until the ingest
-  mapping types the field as a counter. Verify those panels at the ranges the
-  dashboard is actually used at; a correctly counter-typed field renders at every
-  range and stays clean.
+  keeps native translation. On Elasticsearch before 9.6 (or when the version
+  cannot be read, as on Serverless) it is reported as **migrated with warnings**
+  with a panel note: those versions evaluate a gauge rate only while the lookback
+  window stays large relative to the dashboard range's bucket step, so such a
+  panel renders at narrow dashboard ranges and errors at wider ones until the
+  ingest mapping types the field as a counter. A `metric_kinds: counter` pin
+  (curated packs pin many exporter counters) does not suppress the note, because
+  it describes the source, not what the target stores. Verify those panels at the
+  ranges the dashboard is actually used at; a correctly counter-typed field
+  renders at every range and stays clean. Elasticsearch 9.6 and later evaluate
+  these gauge rates at every range, so no note is added there.
 - On the ES|QL path (`--translation-mode esql`, or a target without the `PROMQL`
   command) `RATE` / `IRATE` / `INCREASE` are computed over the query's time
   bucket, so the source `[window]` is deliberately dropped — carrying a fixed

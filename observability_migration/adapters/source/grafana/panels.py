@@ -112,6 +112,7 @@ from .runtime_features import (
     KIBANA_PROMQL_CONTROL_PARAMS,
     PROMQL_HISTOGRAM_QUANTILE,
     PROMQL_LABEL_MATCHER_PARAMS,
+    PROMQL_NON_COUNTER_RANGE_FUNCTIONS,
     PROMQL_VECTOR_MATCHING,
     binds_esql_named_params,
     get_runtime_features,
@@ -3201,14 +3202,22 @@ def _native_promql_counter_func_on_declared_gauge(promql_expr, resolver):
     return _first_counter_range_metric(promql_expr, resolver, "declared_gauge")
 
 
-def _native_counter_func_on_target_gauge_note(promql_expr, resolver):
+def _native_counter_func_on_target_gauge_note(promql_expr, resolver, runtime_features=None):
     """Note for a native counter-style range function over a metric the target
     does not type as a counter, or ``None``.
 
-    ``refutes_counter`` covers both an explicit ``gauge`` mapping and a plain
-    numeric field carrying no ``time_series_metric`` at all, so the wording says
-    "not counter-typed" rather than asserting a gauge mapping the caps may not
-    actually contain.
+    ``target_refutes_counter`` covers both an explicit ``gauge`` mapping and a
+    plain numeric field carrying no ``time_series_metric`` at all, so the
+    wording says "not counter-typed" rather than asserting a gauge mapping the
+    caps may not actually contain. It deliberately ignores a ``metric_kinds:
+    counter`` pin: the curated PostgreSQL packs pin ``pg_stat_database_xact_*``
+    as counters, Prometheus remote-write stores them as gauges, and on 9.5 the
+    pinned "Transaction rate" panels failed at their 24h default range while the
+    report called them clean. The pin describes the source, not what the target
+    stores.
+
+    Targets that advertise ``PROMQL_NON_COUNTER_RANGE_FUNCTIONS`` (9.6+) evaluate
+    these at every range, so the warning would be noise there.
 
     Keeping these native is correct — it is the only form that preserves the
     ``[window]``, and ES|QL's ``RATE()`` cannot run on the field at all — but it
@@ -3230,15 +3239,17 @@ def _native_counter_func_on_target_gauge_note(promql_expr, resolver):
     be counted as clean, and range-dependent breakage is precisely what an
     operator has to check by hand.
     """
+    if is_feature_supported(runtime_features, PROMQL_NON_COUNTER_RANGE_FUNCTIONS):
+        return None
     metric = _first_counter_range_metric(
-        promql_expr, resolver, "refutes_counter", tolerate_failure=True
+        promql_expr, resolver, "target_refutes_counter", tolerate_failure=True
     )
     if not metric:
         return None
     return (
         f"Native PROMQL keeps the source rate()/irate()/increase() window on "
         f"{metric}, but the target does not type this field as a counter. "
-        "Elasticsearch evaluates a non-counter rate only while the lookback "
+        "Elasticsearch before 9.6 evaluates a non-counter rate only while the lookback "
         "window stays large relative to the dashboard range's bucket step, so "
         "this panel renders at narrow dashboard ranges and errors at wider ones. "
         "Verify it at the time ranges this dashboard is actually used at, and fix "
@@ -3707,7 +3718,7 @@ def _translate_panel_native_promql(
     # Only meaningful once the native panel is committed: every gate above can
     # still return None, and on the ES|QL fallback the window is dropped rather
     # than kept, so an early append would contradict the emitted query.
-    target_gauge_note = _native_counter_func_on_target_gauge_note(expr, resolver)
+    target_gauge_note = _native_counter_func_on_target_gauge_note(expr, resolver, runtime_features)
     if target_gauge_note:
         _append_unique(notes, target_gauge_note)
     for recording_rule_note in _recording_rule_metric_map_notes(

@@ -36,6 +36,15 @@ PROMQL_HISTOGRAM_QUANTILE = "promql_histogram_quantile"
 # statically, so callers must also consult
 # ``promql_vector_matching_has_indeterminate_operand``.
 PROMQL_VECTOR_MATCHING = "promql_vector_matching"
+# Native ``rate``/``irate``/``increase`` over a field the target does not type
+# as a counter, at any bucket step. Elasticsearch 9.5 throws
+# ``ReferenceAttribute cannot be cast to ... Bucket`` once the step
+# (range / buckets) outgrows the ``[window]`` — ``rate(gauge[5m])`` breaks past
+# a ~4h view — while 9.6 and 9.7 evaluate the same queries at every range
+# (measured 1h-7d on live remote-write rigs). Version-gated, fail-closed: an
+# unknown version (including Serverless, whose ``version.number`` is nominal)
+# keeps the range-dependent render warning.
+PROMQL_NON_COUNTER_RANGE_FUNCTIONS = "promql_non_counter_range_functions"
 # Plain ES|QL named-parameter binding (``FROM … | WHERE field == ?var`` /
 # ``RLIKE ?var``). Unlike ``promql_label_matcher_params`` this does NOT require
 # the ES|QL PROMQL command, so it is available on a broader set of targets and

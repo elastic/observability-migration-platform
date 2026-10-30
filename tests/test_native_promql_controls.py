@@ -27,6 +27,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from observability_migration.adapters.source.grafana import cli, panels, rules, schema
+from observability_migration.adapters.source.grafana.runtime_features import PROMQL_NON_COUNTER_RANGE_FUNCTIONS
 from observability_migration.adapters.source.grafana.verification import (
     panel_notes_imply_warning,
 )
@@ -271,6 +272,43 @@ class TestRangeVectorPanelsStayNativeWithLiveFieldCaps(unittest.TestCase):
             f"gauge note must imply a warning: {getattr(result, 'notes', None)}",
         )
         self.assertLessEqual(result.confidence, 0.85, result.confidence)
+
+    def test_counter_pin_does_not_hide_target_gauge_typing(self):
+        """Curated PostgreSQL packs pin ``pg_stat_database_xact_commit`` as a
+        counter; Prometheus remote-write stores it as a gauge. On ES 9.5 the
+        pinned "Transaction rate" panels failed at their 24h default range with
+        ``ReferenceAttribute cannot be cast`` while the report called them clean,
+        because the note asked ``refutes_counter``, which the pin short-circuits."""
+        _query, result = self._translate(
+            "rate(kubelet_volume_stats_used_bytes[5m])",
+            metric_kinds={"kubelet_volume_stats_used_bytes": "counter"},
+        )
+
+        notes = list(getattr(result, "notes", []) or []) + list(result.reasons or [])
+        self.assertEqual(
+            len([n for n in notes if "does not type this field as a counter" in n]), 1, notes
+        )
+        self.assertEqual(result.status, "migrated_with_warnings", result.status)
+
+    def test_targets_that_rate_non_counters_at_every_range_get_no_note(self):
+        """ES 9.6 and 9.7 evaluated rate/irate/increase over the same gauge
+        fields at 1h through 7d views without error, so the range warning
+        would be noise there."""
+        rp = rules.RulePackConfig()
+        rp.native_promql = True
+        rp.runtime_features[PROMQL_NON_COUNTER_RANGE_FUNCTIONS] = True
+        resolver = self._resolver(rp, self.GAUGE_CAPS)
+        _yaml_panel, result = panels.translate_panel(
+            _make_panel(1, "rate(kubelet_volume_stats_used_bytes[5m])"),
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=rp,
+            resolver=resolver,
+        )
+
+        self.assertTrue((result.esql_query or "").startswith("PROMQL "), result.esql_query)
+        notes = list(getattr(result, "notes", []) or []) + list(result.reasons or [])
+        self.assertEqual([n for n in notes if "does not type this field as a counter" in n], [], notes)
 
     def test_gauge_note_is_absent_when_the_panel_falls_back_to_esql(self):
         """The note claims native PROMQL *kept* the window, so it must only
