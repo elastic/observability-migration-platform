@@ -10140,6 +10140,37 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertFalse(is_feature_supported(profile, PROMQL_HISTOGRAM_QUANTILE))
 
+    def test_detect_runtime_features_non_counter_range_functions_from_es_96(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _detect_target_runtime_features,
+        )
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_NON_COUNTER_RANGE_FUNCTIONS,
+            is_feature_supported,
+        )
+
+        supported = {}
+        for version in ((9, 5), (9, 6), (9, 7), None):
+            with (
+                mock.patch(
+                    "observability_migration.adapters.source.grafana.cli._detect_promql_support",
+                    return_value=True,
+                ),
+                mock.patch(
+                    "observability_migration.adapters.source.grafana.cli._detect_es_version",
+                    return_value=version,
+                ),
+                mock.patch(
+                    "observability_migration.adapters.source.grafana.cli.requests.get",
+                    return_value=SimpleNamespace(status_code=200, json=lambda: {"nodes": {}}, text=""),
+                ),
+                mock.patch("observability_migration.adapters.source.grafana.cli.requests.post"),
+            ):
+                profile = _detect_target_runtime_features("https://es.example", "apikey")
+            supported[version] = is_feature_supported(profile, PROMQL_NON_COUNTER_RANGE_FUNCTIONS)
+
+        self.assertEqual(supported, {(9, 5): False, (9, 6): True, (9, 7): True, None: False})
+
     def test_parse_args_has_no_native_promql_flag(self):
         """Issue #158: the native-PROMQL override flags are gone; ``auto`` is the
         only path and the run carries no ``native_promql_flag`` intent."""
