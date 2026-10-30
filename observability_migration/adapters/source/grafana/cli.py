@@ -53,6 +53,7 @@ from observability_migration.targets.kibana.compile import (
 )
 from observability_migration.targets.kibana.dashboards_api import (
     dashboard_id_disambiguation_note,
+    dashboard_id_for_title,
     upload_warnings_from_reasons,
 )
 from observability_migration.targets.kibana.native_artifacts import (
@@ -2389,6 +2390,7 @@ def _allocate_dashboard_output_stem(
     title: str,
     dashboard_uid: str | None,
     used_stems: set[str],
+    used_ids: set[str] | None = None,
 ) -> tuple[str, str]:
     """Allocate a unique dashboard artifact stem for one Grafana run.
 
@@ -2399,27 +2401,36 @@ def _allocate_dashboard_output_stem(
     ``targets/kibana/dashboards_api.py::_stable_dashboard_id_from_ir``). Both
     come from one allocation so the artifact name and the dashboard id agree:
     ``shared_title_dash-beta`` <-> ``obs-migrate-shared-title-dash-beta``.
+
+    A collision is checked on the dashboard id too (*used_ids*): titles that
+    differ yet slug to one id ("Kubernetes / Persistent Volumes" vs
+    "kubernetes-persistent-volumes") got distinct stems but the same id, and
+    the second upload was refused as a duplicate.
     """
+    used_ids = used_ids if used_ids is not None else set()
     base = _dashboard_output_stem(title) or "untitled"
-    if base not in used_stems:
-        used_stems.add(base)
+
+    def take(stem: str, token: str) -> bool:
+        dashboard_id = dashboard_id_for_title(title, token)
+        if stem in used_stems or dashboard_id in used_ids:
+            return False
+        used_stems.add(stem)
+        used_ids.add(dashboard_id)
+        return True
+
+    if take(base, ""):
         return base, ""
 
     raw_uid = str(dashboard_uid or "").strip()
     if raw_uid:
         uid_suffix = _dashboard_output_stem(raw_uid)[:24]
-        uid_candidate = f"{base}_{uid_suffix}"
-        if uid_candidate not in used_stems:
-            used_stems.add(uid_candidate)
-            return uid_candidate, uid_suffix
+        if take(f"{base}_{uid_suffix}", uid_suffix):
+            return f"{base}_{uid_suffix}", uid_suffix
 
     index = 2
-    while True:
-        candidate = f"{base}_{index}"
-        if candidate not in used_stems:
-            used_stems.add(candidate)
-            return candidate, str(index)
+    while not take(f"{base}_{index}", str(index)):
         index += 1
+    return f"{base}_{index}", str(index)
 
 
 def main(argv: list[str] | None = None):
@@ -2596,11 +2607,13 @@ def main(argv: list[str] | None = None):
     # translation raised, which is what downstream stages skip on.
     dashboard_outputs = []
     used_dashboard_stems: set[str] = set()
+    used_dashboard_ids: set[str] = set()
     for dashboard in dashboards:
         output_stem, id_disambiguator = _allocate_dashboard_output_stem(
             title=str(dashboard.get("title") or ""),
             dashboard_uid=str(dashboard.get("uid") or ""),
             used_stems=used_dashboard_stems,
+            used_ids=used_dashboard_ids,
         )
         dashboard_pack = resolve_pack_for_dashboard(
             dashboard,

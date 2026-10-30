@@ -57,6 +57,7 @@ from observability_migration.core.verification.disposition import (
 from observability_migration.targets.kibana.alerting import exit_if_rule_creation_skipped
 from observability_migration.targets.kibana.dashboards_api import (
     dashboard_id_disambiguation_note,
+    dashboard_id_for_title,
     upload_warnings_from_reasons,
 )
 from observability_migration.targets.kibana.native_artifacts import (
@@ -342,6 +343,7 @@ def _run_dashboard_pipeline(
     all_results: list[DashboardResult] = []
     dashboard_outputs: list[tuple[DashboardResult, Any]] = []
     used_artifact_stems: set[str] = set()
+    used_dashboard_ids: set[str] = set()
 
     for raw in raw_dashboards:
         dashboard = normalize_dashboard(raw)
@@ -385,6 +387,7 @@ def _run_dashboard_pipeline(
             title=dashboard.title,
             dashboard_id=dashboard.id,
             used_stems=used_artifact_stems,
+            used_ids=used_dashboard_ids,
         )
         # The run's artifacts are native/ + ir/; no dashboard YAML is written
         # (see docs/architecture/asset-model.md), so none is built either --
@@ -1561,6 +1564,7 @@ def _allocate_artifact_stem(
     title: str,
     dashboard_id: str | None,
     used_stems: set[str],
+    used_ids: set[str] | None = None,
 ) -> tuple[str, str]:
     """Allocate a unique artifact filename stem to avoid collisions.
 
@@ -1574,27 +1578,34 @@ def _allocate_artifact_stem(
     ``targets/kibana/dashboards_api.py::_stable_dashboard_id_from_ir``). Both
     come from one allocation so the artifact name and the dashboard id agree:
     ``shared_title_dash-beta`` <-> ``obs-migrate-shared-title-dash-beta``.
+
+    A collision is checked on the Kibana dashboard id too (*used_ids*), since
+    different titles can slug to one id.
     """
+    used_ids = used_ids if used_ids is not None else set()
     base = _safe_filename(title)
-    if base not in used_stems:
-        used_stems.add(base)
+
+    def take(stem: str, token: str) -> bool:
+        kibana_id = dashboard_id_for_title(title, token)
+        if stem in used_stems or kibana_id in used_ids:
+            return False
+        used_stems.add(stem)
+        used_ids.add(kibana_id)
+        return True
+
+    if take(base, ""):
         return base, ""
 
     raw_dashboard_id = str(dashboard_id or "").strip()
     if raw_dashboard_id:
         id_suffix = _safe_filename(raw_dashboard_id)[:24]
-        id_candidate = f"{base}_{id_suffix}"
-        if id_candidate not in used_stems:
-            used_stems.add(id_candidate)
-            return id_candidate, id_suffix
+        if take(f"{base}_{id_suffix}", id_suffix):
+            return f"{base}_{id_suffix}", id_suffix
 
     index = 2
-    while True:
-        candidate = f"{base}_{index}"
-        if candidate not in used_stems:
-            used_stems.add(candidate)
-            return candidate, str(index)
+    while not take(f"{base}_{index}", str(index)):
         index += 1
+    return f"{base}_{index}", str(index)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
