@@ -189,6 +189,18 @@ buries the failures that matter. The distinction is drawn from the payload's own
 shape, not from a caller's claim, so a source that drops panels without
 counting them cannot reach the benign answer by staying quiet.
 
+#### Live-data fitting
+
+With an ES URL (`migrate --upload --es-url`, or `obs-migrate upload --es-url`),
+`_upload_native_api_payload` adjusts the payload from live data before the PUT and
+records each change on `UploadResult.live_adjustments`: empty ES|QL values-control
+selections are seeded (`_hydrate_values_query_control_defaults`), then
+`duration` series whose largest value in the panel's default window is under 1 ms
+get a `number` format (`_fit_duration_formats_to_live_data`), because Kibana 9.6+
+renders `duration` in whole units and they read "0 ms" on every tick (#480).
+Without an ES URL nothing is changed. See
+[Review and Upload](../command-contract.md#review-and-upload).
+
 #### Control data views
 
 A control's `data_view_id` starts life as an index pattern (`metrics-*`), which

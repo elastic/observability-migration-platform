@@ -529,6 +529,7 @@ class KibanaTargetAdapter(TargetAdapter):
             "unresolved_data_views": [
                 unresolved.to_dict() for unresolved in (result.unresolved_data_views or [])
             ],
+            "live_adjustments": list(result.live_adjustments or []),
         }
 
     def _native_artifact_upload_file(
@@ -624,6 +625,7 @@ class KibanaTargetAdapter(TargetAdapter):
             "unresolved_data_views": [
                 unresolved.to_dict() for unresolved in (result.unresolved_data_views or [])
             ],
+            "live_adjustments": list(result.live_adjustments or []),
         }
 
     def upload(self, artifact_dir: Path, **kwargs: Any) -> dict[str, Any]:
@@ -776,6 +778,7 @@ class KibanaTargetAdapter(TargetAdapter):
             "panels_accepted": record.get("panels_accepted", 0),
             "dropped_panels": record.get("dropped_panels", []),
             "unresolved_data_views": record.get("unresolved_data_views", []),
+            "live_adjustments": record.get("live_adjustments", []),
         }
 
     def smoke(self, **kwargs: Any) -> dict[str, Any]:

@@ -68,6 +68,7 @@ minimal in this first cut; those are additive and never change acceptance.
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 from collections.abc import Iterable
@@ -256,6 +257,10 @@ class UploadResult:
     # ``dropped_panels``, for the control group instead of the panel grid (see
     # :func:`_record_dropped_dashboard_state`).
     dropped_controls: list[str] = field(default_factory=list)
+    # Changes made to the payload from live data just before sending (only with
+    # an ES URL): e.g. a sub-millisecond duration series switched to a number
+    # format. The reviewed artifact on disk is unchanged.
+    live_adjustments: list[str] = field(default_factory=list)
     # Critical dashboard- or panel-level properties Kibana accepted (2xx)
     # without preserving: ``"time_range"``, ``"refresh_interval"``, or
     # ``"<panel title>: time_range"`` / ``"<panel title>: temporal_x_scale"``.
@@ -2671,7 +2676,8 @@ def _hydrate_values_query_control_defaults(
     es_api_key: str = "",
     verify: bool | str = True,
     timeout: int = 15,
-) -> None:
+    changes: list[str] | None = None,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     """Populate empty ES|QL values-query defaults from live Elasticsearch data.
 
     Kibana's Dashboard API cleanly stores ES|QL controls, but an empty
@@ -2686,12 +2692,16 @@ def _hydrate_values_query_control_defaults(
     options before upload. Multi-value controls get every concrete option (the
     Kibana-safe replacement for Grafana's ``.*`` all-sentinel); single-select
     controls get the first concrete option.
+
+    Returns the bound control values and configs, so panel queries run later in
+    the upload see the same filters a viewer does. Each seeded control is
+    described in *changes* when given.
     """
     controls = payload.get("pinned_panels")
-    if not es_url or not isinstance(controls, list):
-        return
     bound_values: dict[str, Any] = {}
     control_configs: dict[str, dict[str, Any]] = {}
+    if not es_url or not isinstance(controls, list):
+        return bound_values, control_configs
     session = _session(es_api_key, verify=verify)
     for control in controls:
         if not isinstance(control, dict):
@@ -2715,11 +2725,170 @@ def _hydrate_values_query_control_defaults(
             selected = _hydrated_selected_options(options, config)
             if selected:
                 config["selected_options"] = selected
+                if changes is not None:
+                    changes.append(
+                        f"control '{config.get('title') or variable_name}': no default selection in the "
+                        f"artifact; selected {len(selected)} live value(s) so bound panels do not "
+                        "receive a null parameter"
+                    )
         if variable_name:
             control_configs[variable_name] = config
             bound = _control_binding_value(config)
             if bound is not None:
                 bound_values[variable_name] = bound
+    return bound_values, control_configs
+
+
+# Seconds per ``duration`` ``from`` unit the Dashboards API accepts.
+_DURATION_UNIT_SECONDS = {
+    "ps": 1e-12, "ns": 1e-9, "us": 1e-6, "ms": 1e-3, "s": 1.0,
+    "min": 60.0, "h": 3600.0, "d": 86400.0, "w": 604800.0,
+}
+_DURATION_UNIT_SUFFIX = {"us": " µs"}
+_SUB_MILLISECOND_SECONDS = 1e-3
+
+
+def _duration_series(config: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
+    """``(query, column, format holder)`` for each duration-formatted value."""
+    series: list[tuple[str, str, dict[str, Any]]] = []
+    for layer in config.get("layers") or []:
+        if not isinstance(layer, dict):
+            continue
+        query = str((layer.get("data_source") or {}).get("query") or "")
+        for y in layer.get("y") or []:
+            if isinstance(y, dict) and (y.get("format") or {}).get("type") == "duration":
+                series.append((query, str(y.get("column") or ""), y))
+    # Single-value charts: gauges carry ``metric``; metric tiles a ``metrics``
+    # list (``{"type": "primary", ...}``). Both read the panel-level query.
+    query = str((config.get("data_source") or {}).get("query") or "")
+    candidates = [config.get("metric"), *(config.get("metrics") or [])]
+    for metric in candidates:
+        if isinstance(metric, dict) and (metric.get("format") or {}).get("type") == "duration":
+            series.append((query, str(metric.get("column") or ""), metric))
+    return [item for item in series if item[0] and item[1]]
+
+
+_RELATIVE_FROM_RE = re.compile(r"^now-(\d+)([smhdw])$")
+_RELATIVE_UNIT = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
+
+
+def _relative_time_window(time_range: Any) -> timedelta | None:
+    """``now-<N><unit>`` → ``<N><unit>``; anything else → ``None``."""
+    if not isinstance(time_range, dict) or str(time_range.get("to") or "now") != "now":
+        return None
+    match = _RELATIVE_FROM_RE.match(str(time_range.get("from") or "").strip())
+    if not match:
+        return None
+    return timedelta(**{_RELATIVE_UNIT[match.group(2)]: int(match.group(1))})
+
+
+def _readable_sub_millisecond_format(fmt: dict[str, Any], max_abs: float) -> dict[str, Any] | None:
+    """Number format for a duration whose largest live value is under 1 ms.
+
+    Kibana 9.6+ renders ``duration`` with whole output units only, so a series
+    of 0.2 ms values reads "0 ms" on every axis tick (#480; 9.5 printed "0.25
+    milliseconds"; upstream elastic/kibana#301576). The transform accepts neither ``decimals`` nor a unit below
+    ``ms`` for duration, so such a series keeps its source unit as a number
+    with enough decimals for two significant digits of its largest value.
+    """
+    unit = str(fmt.get("from") or "s")
+    factor = _DURATION_UNIT_SECONDS.get(unit)
+    if factor is None or not max_abs or max_abs * factor >= _SUB_MILLISECOND_SECONDS:
+        return None
+    decimals = min(9, max(0, math.ceil(-math.log10(max_abs))) + 1)
+    return {"type": "number", "decimals": decimals, "suffix": _DURATION_UNIT_SUFFIX.get(unit, f" {unit}")}
+
+
+def _column_max_abs(
+    session: requests.Session,
+    es_url: str,
+    query: str,
+    column: str,
+    *,
+    bound_values: dict[str, Any],
+    control_configs: dict[str, dict[str, Any]],
+    timeout: int,
+) -> float | None:
+    payload: dict[str, Any] = {"query": query.strip()}
+    params = _control_query_params(query, bound_values, control_configs)
+    if params:
+        payload["params"] = params
+    try:
+        response = session.post(
+            f"{es_url.rstrip('/')}/_query", json=payload, params={"format": "json"}, timeout=timeout,
+        )
+        if response.status_code != 200:
+            return None
+        body = response.json()
+    except (requests.exceptions.RequestException, ValueError):
+        return None
+    names = [str(col.get("name") or "") for col in body.get("columns") or []]
+    if column not in names:
+        return None
+    idx = names.index(column)
+    values = [
+        abs(row[idx])
+        for row in body.get("values") or []
+        if isinstance(row, list) and idx < len(row)
+        and isinstance(row[idx], int | float) and not isinstance(row[idx], bool)
+    ]
+    return max(values) if values else None
+
+
+def _fit_duration_formats_to_live_data(
+    payload: dict[str, Any],
+    *,
+    es_url: str = "",
+    es_api_key: str = "",
+    verify: bool | str = True,
+    timeout: int = 15,
+    bound_values: dict[str, Any] | None = None,
+    control_configs: dict[str, dict[str, Any]] | None = None,
+) -> list[str]:
+    """Switch duration formats whose live values are all sub-millisecond.
+
+    Runs each duration-formatted series' query once (with the hydrated control
+    values bound, as a viewer would see it) and rewrites only series whose
+    largest value is under 1 ms. Returns one description per change. Without
+    live data nothing changes: the reviewed format is the best static choice.
+    """
+    if not es_url:
+        return []
+    session = _session(es_api_key, verify=verify)
+    dashboard_window = _relative_time_window(payload.get("time_range"))
+    cache: dict[tuple[str, str, timedelta | None], float | None] = {}
+    changes: list[str] = []
+    for _section, panel in iter_payload_leaf_panels(payload):
+        config = panel.get("config") if isinstance(panel, dict) else None
+        if not isinstance(config, dict):
+            continue
+        # Sample the window a viewer sees on load (a panel override such as
+        # "Last 1 minute" wins), not the control lookup window.
+        window = _relative_time_window(config.get("time_range")) or dashboard_window
+        bound = dict(bound_values or {})
+        if window is not None:
+            end = datetime.now(UTC)
+            bound["_tstart"] = _iso_z(end - window)
+            bound["_tend"] = _iso_z(end)
+        for query, column, holder in _duration_series(config):
+            key = (query, column, window)
+            if key not in cache:
+                cache[key] = _column_max_abs(
+                    session, es_url, query, column,
+                    bound_values=bound, control_configs=control_configs or {}, timeout=timeout,
+                )
+            max_abs = cache[key]
+            fitted = _readable_sub_millisecond_format(holder["format"], max_abs) if max_abs else None
+            if fitted is None:
+                continue
+            holder["format"] = fitted
+            title = str(config.get("title") or column)
+            changes.append(
+                f"{title}: '{column}' peaks at {max_abs:.3g} {holder.get('format', {}).get('suffix', '').strip()} "
+                "(under 1 ms), so it uses a number format instead of duration, which Kibana "
+                "9.6+ would draw as \"0 ms\" on every tick"
+            )
+    return changes
 
 
 def upload_report(
@@ -3408,12 +3577,22 @@ def _upload_native_api_payload(
         unmapped=unmapped,
         unmapped_reasons=dict(reasons or {}),
     )
-    _hydrate_values_query_control_defaults(
+    bound_values, control_configs = _hydrate_values_query_control_defaults(
         payload,
         es_url=es_url,
         es_api_key=es_api_key,
         verify=verify,
         timeout=min(timeout, 15),
+        changes=res.live_adjustments,
+    )
+    res.live_adjustments += _fit_duration_formats_to_live_data(
+        payload,
+        es_url=es_url,
+        es_api_key=es_api_key,
+        verify=verify,
+        timeout=min(timeout, 15),
+        bound_values=bound_values,
+        control_configs=control_configs,
     )
     res.unresolved_data_views = _resolve_pinned_panel_data_view_ids(
         payload, data_view_ids, data_view_inventory=data_view_inventory,

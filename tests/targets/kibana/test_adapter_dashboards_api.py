@@ -262,6 +262,9 @@ class TestNativeArtifactUpload(unittest.TestCase):
                 # Controls left pointing at an index pattern no ensured data
                 # view matches; Kibana renders those as "An error occurred".
                 "unresolved_data_views",
+                # Changes fitted from live data before sending (only with an
+                # ES URL): seeded control selections, sub-ms duration formats.
+                "live_adjustments",
                 # The one non-success outcome that is not a defect: the source
                 # dashboard had no panels, so the caller reports a skip rather
                 # than an upload failure.
@@ -316,6 +319,34 @@ class TestUploadDashboardNativePath(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertEqual(result["status"], "updated")
         self.assertEqual(result["dashboard_ids"], ["direct-ir"])
+
+    def test_upload_dashboard_reports_live_adjustments(self):
+        # ``migrate --upload --es-url`` prints these; the in-memory upload record
+        # dropped them, so seeded controls / fitted formats went unreported.
+        native_dashboard = NativeDashboard(
+            title="Direct IR",
+            dashboard_id="direct-ir",
+            items=[NativePanel(grid=NativeGrid(), type="vis", config={"type": "metric"})],
+        )
+        uploaded = UploadResult(
+            dashboard="Direct IR", dashboard_id="direct-ir", status="updated", mapped=1,
+            live_adjustments=["control 'instance': selected 2 live value(s)"],
+        )
+        with mock.patch(
+            "observability_migration.targets.kibana.adapter.ensure_migration_data_views",
+            return_value=[{"id": "metrics-*", "title": "metrics-*"}],
+        ), mock.patch(
+            "observability_migration.targets.kibana.adapter.dashboards_api.upload_native_dashboard",
+            return_value=uploaded,
+        ):
+            result = KibanaTargetAdapter().upload_dashboard(
+                kibana_url="https://kibana.example",
+                es_url="https://es.example",
+                native_dashboard=native_dashboard,
+                native_dashboard_stats={"mapped": 1, "unmapped": 0, "reasons": {}},
+            )
+
+        self.assertEqual(result["live_adjustments"], ["control 'instance': selected 2 live value(s)"])
 
     def test_upload_dashboard_passes_resolved_data_view_ids_to_native_upload(self):
         # Regression test for PR #278 review: a data-view-backed control's
