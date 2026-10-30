@@ -1889,8 +1889,42 @@ def _clean_promql_for_native_with_state(
     expr = re.sub(r'\ble=("|\')(\d+)\1', lambda m: f'le={m.group(1)}{m.group(2)}.0{m.group(1)}', expr)
 
     expr = re.sub(r"\s+", " ", expr).strip()
+    expr = _space_division_before_paren(expr)
 
     return expr, had_bare_variable
+
+
+def _space_division_before_paren(expr):
+    """Write ``a/(b)`` as ``a/ (b)`` so the ES ``PROMQL`` command parses it.
+
+    Elasticsearch 9.6 rejects a division immediately followed by an opening
+    parenthesis inside ``value=(…)`` with ``mismatched input ')'``, while
+    ``a/ (b)``, ``a / (b)``, ``a/b`` and every other operator before ``(`` parse.
+    Dashboards write ratios as ``sum(x)/(sum(x) + sum(y))`` constantly. With
+    ``--es-url`` the parse gate quietly degraded them to the ES|QL
+    approximation; offline the broken query was uploaded and the panel failed.
+    Quoted label values are left alone (``=~"/(api)"`` is data).
+    """
+    if "/(" not in expr:
+        return expr
+    out = []
+    quote = ""
+    index = 0
+    while index < len(expr):
+        char = expr[index]
+        out.append(char)
+        if quote:
+            if char == "\\" and index + 1 < len(expr):
+                out.append(expr[index + 1])
+                index += 1
+            elif char == quote:
+                quote = ""
+        elif char in "\"'`":
+            quote = char
+        elif char == "/" and expr.startswith("(", index + 1):
+            out.append(" ")
+        index += 1
+    return "".join(out)
 
 
 def _clean_promql_for_native(
