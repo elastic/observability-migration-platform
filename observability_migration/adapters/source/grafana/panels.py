@@ -4138,6 +4138,14 @@ def _enrich_panel_result(
                 "status": "not_required",
                 "actions": [],
             }
+    # A repeat the translator could not fan out is reported on the panel's
+    # own result (see ``_with_repeat_warning``), not as a separate skipped one.
+    repeat_warnings = panel.get("_repeat_warnings") or []
+    for warning in repeat_warnings:
+        _append_unique(panel_result.reasons, warning)
+    if repeat_warnings and panel_result.status == "migrated":
+        panel_result.status = "migrated_with_warnings"
+        panel_result.confidence = min(panel_result.confidence, 0.8)
     approximation_note = APPROXIMATED_VIS_TYPE_NOTES.get(panel_result.grafana_type)
     if _SKIP_APPROXIMATION_NOTE in (panel_result.notes or []):
         approximation_note = None
@@ -11326,47 +11334,31 @@ def _expand_repeat_panels(
                 # best-effort fallback) and emit a warning so the
                 # operator knows the repeat dimension wasn't fanned
                 # out.
-                warn_result = PanelResult(
-                    str(panel.get("title") or panel.get("type") or "panel"),
-                    str(panel.get("type") or ""),
-                    "skipped",
-                    "skipped",
-                    1.0,
-                )
-                warn_result.reasons = [
+                # Preserve the panel so the decorative-header /
+                # control-collapse paths downstream still recognise it, and
+                # carry the warning on it: a separate "skipped" result made
+                # one element count twice in the panel totals.
+                out.append(_with_repeat_warning(
+                    panel,
                     f"Could not resolve repeat variable ${repeat_name}; "
                     f"the dashboard's templating doesn't expose its values "
                     f"(no options[] or current cached). The repeat "
                     f"dimension is lost; consider adding explicit options "
                     f"to the variable definition.",
-                ]
-                result.panel_results.append(warn_result)
-                result.skipped += 1
-                # Preserve the original panel unchanged so the
-                # existing decorative-header / control-collapse paths
-                # downstream still recognise it.
-                out.append(panel)
+                ))
                 continue
 
             capped_values = values[:L4_REPEAT_EXPANSION_CAP]
+            cap_warning = ""
             if len(values) > L4_REPEAT_EXPANSION_CAP:
-                warn_result = PanelResult(
-                    str(panel.get("title") or panel.get("type") or "panel"),
-                    str(panel.get("type") or ""),
-                    "skipped",
-                    "skipped",
-                    1.0,
-                )
-                warn_result.reasons = [
+                cap_warning = (
                     f"Repeat variable ${repeat_name} has {len(values)} "
                     f"values; capped expansion to the first "
                     f"{L4_REPEAT_EXPANSION_CAP} to prevent dashboard "
                     f"explosion. Add a dashboard control filter to "
                     f"select among the remaining "
-                    f"{len(values) - L4_REPEAT_EXPANSION_CAP} values.",
-                ]
-                result.panel_results.append(warn_result)
-                result.skipped += 1
+                    f"{len(values) - L4_REPEAT_EXPANSION_CAP} values."
+                )
 
             direction = str(panel.get("repeatDirection") or "v").lower()
             origin = panel.get("gridPos") or {}
@@ -11401,6 +11393,8 @@ def _expand_repeat_panels(
                         "h": base_h,
                     }
                 clone["gridPos"] = gpos
+                if cap_warning and idx == 0:
+                    clone = _with_repeat_warning(clone, cap_warning)
                 out.append(clone)
         return out
 
@@ -11643,6 +11637,13 @@ def _is_placeholder_section_title(title):
     if not cleaned:
         return False
     return cleaned.casefold() in _PLACEHOLDER_SECTION_TITLES
+
+
+def _with_repeat_warning(panel, reason):
+    """Copy of *panel* carrying a repeat-expansion warning for its own result."""
+    marked = dict(panel)
+    marked["_repeat_warnings"] = [*(panel.get("_repeat_warnings") or []), reason]
+    return marked
 
 
 def _build_normalization_skip_result(panel, reason):
@@ -12819,7 +12820,8 @@ def translate_dashboard(dashboard, datasource_index="metrics-*", esql_index=None
     for panel in all_panels:
         if panel.get("type") == "row":
             row_pr = PanelResult(
-                str(panel.get("title") or "row"), "row", "section", "skipped", 1.0
+                str(panel.get("title") or "row"), "row", "section", "skipped", 1.0,
+                reasons=list(panel.get("_repeat_warnings") or []),
             )
             result.panel_results.append(row_pr)
             result.skipped += 1
