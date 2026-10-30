@@ -9,6 +9,7 @@ import pathlib
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from unittest import mock
 
 from observability_migration.adapters.source.grafana import smoke
@@ -434,9 +435,35 @@ class UploadedDashboardSmokeTests(unittest.TestCase):
             )
 
         self.assertEqual(result["status"], "pass")
-        self.assertEqual(captured["body"]["filter"], dsl_filter)
+        time_filter, dashboard_filter = captured["body"]["filter"]["bool"]["filter"]
+        self.assertIn("@timestamp", time_filter["range"])
+        self.assertEqual(dashboard_filter, dsl_filter)
 
-    def test_validate_esql_omits_filter_when_no_dashboard_dsl_filter(self):
+    def test_validate_esql_sends_the_time_range_as_a_filter_like_kibana(self):
+        # Kibana sends the dashboard time range as a request filter, which lets
+        # Elasticsearch skip indices with no documents in range before it
+        # resolves mappings. Live 9.5 rig: a stale OTel index mapped
+        # ``resource`` as an object, so smoke without the filter reported 51
+        # "Cannot use field [resource] due to ambiguities" errors on panels
+        # that rendered fine in Kibana.
+        captured = {}
+
+        def fake_post(url, params, json, headers, timeout):
+            captured["body"] = json
+            return _FakeResponse({"columns": [{"name": "value"}], "values": [[1]]})
+
+        with mock.patch.object(smoke.requests, "post", side_effect=fake_post):
+            smoke.validate_esql(
+                "http://localhost:9200", "FROM metrics-* | LIMIT 1", timeout=30,
+                time_window=timedelta(hours=6),
+            )
+
+        window = captured["body"]["filter"]["range"]["@timestamp"]
+        start = datetime.fromisoformat(window["gte"].replace("Z", "+00:00"))
+        end = datetime.fromisoformat(window["lte"].replace("Z", "+00:00"))
+        self.assertEqual(end - start, timedelta(hours=6))
+
+    def test_validate_esql_defaults_the_time_filter_to_one_hour(self):
         captured = {}
 
         def fake_post(url, params, json, headers, timeout):
@@ -446,7 +473,10 @@ class UploadedDashboardSmokeTests(unittest.TestCase):
         with mock.patch.object(smoke.requests, "post", side_effect=fake_post):
             smoke.validate_esql("http://localhost:9200", "FROM metrics-* | LIMIT 1", timeout=30)
 
-        self.assertNotIn("filter", captured["body"])
+        window = captured["body"]["filter"]["range"]["@timestamp"]
+        start = datetime.fromisoformat(window["gte"].replace("Z", "+00:00"))
+        end = datetime.fromisoformat(window["lte"].replace("Z", "+00:00"))
+        self.assertEqual(end - start, timedelta(hours=1))
 
     def test_extract_dashboard_filter_dsl_builds_bool_from_phrase_filters(self):
         attributes = {
