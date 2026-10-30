@@ -493,6 +493,10 @@ def _gauge_fallback_for_counter_range_func(range_func):
 # contract locks rate()-ed fields as counters, so degrading on live caps bakes
 # in a translation that hard-fails (400) once the ingest follows the contract.
 # Only an explicit rule-pack ``metric_kinds: gauge`` pin forces the degrade.
+# Exception: with live caps, ``counter_typing.apply_gauge_typed_counter_rewrites``
+# rewrites RATE/IRATE/INCREASE over fields the target positively types as
+# gauges (exporter ``untyped`` counters on the native /_prometheus endpoint)
+# into DELTA-over-window, since that typing is what Elastic's own ingest does.
 # ``increase`` is excluded: it can be misused on a real gauge, so it keeps the
 # conservative heuristic-driven degradation.
 _COUNTER_ONLY_RANGE_FUNCTIONS = frozenset({"rate", "irate"})
