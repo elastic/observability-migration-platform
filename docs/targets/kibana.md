@@ -405,6 +405,20 @@ PUT-then-GET round-trip check. The emitter therefore does not send them.
   nothing and Kibana stores no `text` for it; only the `visible` request is
   sent.
 
+### Multi-Metric Breakdown Layers
+
+Kibana colours a broken-down XY layer through a `colorMapping` keyed on the
+breakdown value, and the API accepts no other colour shape for `breakdown_by`.
+A layer with several metrics and a breakdown therefore drew every metric of
+one term in the same colour (Grafana 763 "Total Memory Usage": `used` and
+`max` of `redis:6379` both teal). The emitter folds such a layer into one
+`_value` column broken down by `_series` (`"redis:6379 - used"`, the label
+Kibana showed before) by appending `EVAL` / `MV_EXPAND` / `CASE` to its ES|QL,
+so each pair is its own term and colour. The appended `LIMIT` scales the
+query's row cap (1000 when it states none) by the number of metrics, up to
+ES|QL's 10000. Layers whose metrics differ in format or axis are not folded,
+since one value column carries one format.
+
 ## Current Structural Gaps
 
 - Source-aware emitted-query validation is still source-located because it depends on Grafana- and Datadog-specific query rewrite logic.
