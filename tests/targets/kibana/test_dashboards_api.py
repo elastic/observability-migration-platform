@@ -2551,6 +2551,82 @@ def test_legend_truncate_zero_disables_truncation():
     assert api._truncate_config(None) is None
 
 
+# Kibana colours a broken-down XY layer by breakdown value only, so every metric
+# of one term shared a colour (Grafana 763 "Total Memory Usage": used and max
+# of redis:6379 both teal). Such layers fold into one series per pair.
+_MEMORY_QUERY = "TS m\n| STATS used = AVG(u), max = AVG(x) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance"
+
+
+def _memory_layer(query=_MEMORY_QUERY, **overrides):
+    cfg = _map({
+        "type": "area",
+        "query": query,
+        "dimension": {"field": "time_bucket"},
+        "breakdown": {"field": "instance"},
+        "metrics": [
+            {"field": "used", "label": "used", "format": {"type": "bytes"}},
+            {"field": "max", "label": "max", "format": {"type": "bytes"}},
+        ],
+        **overrides,
+    })["config"]
+    return cfg["layers"][0]
+
+
+def test_multi_metric_breakdown_folds_into_one_series_per_pair():
+    layer = _memory_layer()
+
+    assert layer["data_source"]["query"] == (
+        _MEMORY_QUERY + "\n"
+        '| EVAL _series = ["used", "max"]\n'
+        "| MV_EXPAND _series\n"
+        '| EVAL _value = CASE(_series == "used", TO_DOUBLE(used), TO_DOUBLE(max)), '
+        '_series = CONCAT(COALESCE(TO_STRING(instance), ""), " - ", _series)\n'
+        "| KEEP time_bucket, _series, _value\n"
+        "| LIMIT 2000"
+    )
+    assert layer["y"] == [{"column": "_value", "label": "used / max", "format": {"type": "bytes"}}]
+    assert layer["breakdown_by"]["column"] == "_series"
+
+
+def _layer_limit(layer):
+    return layer["data_source"]["query"].rsplit("\n", 1)[-1]
+
+
+def test_fold_scales_an_explicit_limit_and_caps_it():
+    # Folding two metrics doubles the rows; ES|QL returns at most 10000.
+    assert _layer_limit(_memory_layer(_MEMORY_QUERY + "\n| LIMIT 3000")) == "| LIMIT 6000"
+    assert _layer_limit(_memory_layer(_MEMORY_QUERY + " | limit 9000")) == "| LIMIT 10000"
+
+
+def test_fold_quotes_labels_and_columns():
+    layer = _memory_layer(metrics=[
+        {"field": "p-50", "label": 'p50 "fast"'},
+        {"field": "p99", "label": "p99"},
+    ])
+    query = layer["data_source"]["query"]
+    assert '["p50 \\"fast\\"", "p99"]' in query
+    assert "TO_DOUBLE(`p-50`)" in query
+
+
+def test_multi_metric_layers_that_cannot_fold_are_unchanged():
+    # Different formats (or axes) would be lost in one value column.
+    mixed = _memory_layer(metrics=[
+        {"field": "used", "format": {"type": "bytes"}},
+        {"field": "ratio", "format": {"type": "percent"}},
+    ])
+    assert [y["column"] for y in mixed["y"]] == ["used", "ratio"]
+    assert mixed["data_source"]["query"] == _MEMORY_QUERY
+    # No breakdown: Kibana already colours each metric separately.
+    plain = _map({
+        "type": "line", "query": "FROM m", "dimension": {"field": "time_bucket"},
+        "metrics": [{"field": "a"}, {"field": "b"}],
+    })["config"]["layers"][0]
+    assert plain["data_source"]["query"] == "FROM m"
+    # One metric per term already gets its own colour.
+    single = _memory_layer(metrics=[{"field": "used"}])
+    assert single["data_source"]["query"] == _MEMORY_QUERY
+
+
 def test_heatmap_reads_legend_from_appearance():
     # Bug #5: Datadog emits heatmap legend under ``appearance.legend``.
     cfg = _map({
