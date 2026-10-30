@@ -2167,7 +2167,10 @@ class TestNativePromQLIntegrity(unittest.TestCase):
 
         esql = yaml_panel["esql"]
         self.assertEqual(esql["type"], "gauge")
-        self.assertEqual(esql["metric"]["label"], "CPU Usage")
+        # The panel title stays visible (an empty gauge draws no label, #482);
+        # the gauge label is blanked so a populated gauge does not repeat it.
+        self.assertEqual(esql["metric"]["label"], "")
+        self.assertNotIn("hide_title", yaml_panel)
         self.assertEqual(esql["metric"]["format"]["suffix"], "%")
         self.assertEqual(esql["minimum"], {"field": "_gauge_min"})
         self.assertEqual(esql["maximum"], {"field": "_gauge_max"})
