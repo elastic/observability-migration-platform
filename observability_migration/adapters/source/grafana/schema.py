@@ -120,7 +120,14 @@ class SchemaResolver:
         verify: bool | str = True,
         passthrough: bool = False,
         field_profile: str | None = None,
+        field_profile_explicit: bool | None = None,
     ):
+        # Whether the operator chose the profile. An omitted profile is the
+        # built-in ``otel`` default: a label it maps without target evidence is
+        # a guess, not an operator assertion (see ``binding_status``).
+        if field_profile_explicit is None:
+            field_profile_explicit = field_profile is not None or passthrough
+        self._field_profile_explicit = bool(field_profile_explicit)
         if field_profile is None:
             field_profile = "passthrough" if passthrough else "otel"
         if field_profile not in self.FIELD_PROFILES:
@@ -163,6 +170,9 @@ class SchemaResolver:
         self._metric_map_gaps: list[str] = []
         self._metric_map_warnings: list[str] = []
         self._metric_map_applied: dict[str, str] = {}
+        # Active per-asset capture frames for ``resolve_label`` provenance
+        # (``begin_binding_capture`` / ``end_binding_capture``).
+        self._binding_captures: list[list[dict[str, str]]] = []
         self._assert_metric_map_targets_are_logical()
 
     def _assert_metric_map_targets_are_logical(self) -> None:
@@ -677,9 +687,78 @@ class SchemaResolver:
             or name in self._rule_pack.label_candidates
         )
 
+    # Binding statuses, worst first. ``missing``: live caps exist and lack the
+    # field. ``guessed``: the built-in default mapping chose it with no target
+    # evidence. ``asserted``: the operator chose the layout (explicit profile,
+    # rule-pack rewrite, passthrough) but nothing verified it. ``verified``:
+    # live caps advertise it (or co-occurrence with the metric proved it).
+    BINDING_STATUS_ORDER = ("missing", "guessed", "asserted", "verified")
+
+    def begin_binding_capture(self):
+        """Start recording ``resolve_label`` provenance for one asset.
+
+        Frames nest: every active frame receives each resolution, so a panel
+        translated inside another capture is reported by both.
+        """
+        self._binding_captures.append([])
+
+    def end_binding_capture(self):
+        """Stop the innermost capture and return its resolutions in order."""
+        if not self._binding_captures:
+            return []
+        return self._binding_captures.pop()
+
+    def binding_status(self, field_name, basis):
+        """Classify how trustworthy one emitted label field is (see
+        ``BINDING_STATUS_ORDER``)."""
+        if basis in {"metric_cooccurrence", "live_caps", "discovered"}:
+            return "verified"
+        if self._field_cache:
+            return "verified" if field_name in self._field_cache else "missing"
+        if basis == "otel_default" and not self._field_profile_explicit:
+            return "guessed"
+        return "asserted"
+
+    def native_promql_label_binding(self, label):
+        """Binding entry for a label a native PROMQL query keeps verbatim.
+
+        The PROMQL command matches the bare label against the target's
+        dimensions (directly or through the ``labels.*`` /
+        ``prometheus.labels.*`` passthrough), so any of those spellings in live
+        caps verifies it.
+        """
+        if self._field_cache:
+            candidates = (label, f"labels.{label}", f"prometheus.labels.{label}")
+            status = (
+                "verified"
+                if any(candidate in self._field_cache for candidate in candidates)
+                else "missing"
+            )
+        else:
+            status = "asserted" if self._field_profile_explicit else "guessed"
+        return {"label": str(label), "field": str(label), "basis": "promql_label", "status": status}
+
     def resolve_label(self, label, metric_field=None):
+        resolved, basis = self._resolve_label_with_basis(label, metric_field)
+        if resolved is not None and self._binding_captures:
+            entry = {
+                "label": str(label),
+                "field": str(resolved),
+                "basis": basis,
+                "status": self.binding_status(resolved, basis),
+            }
+            for frame in self._binding_captures:
+                frame.append(entry)
+        return resolved
+
+    def _resolve_label_with_basis(self, label, metric_field=None):
+        """``resolve_label`` plus the reason the field was chosen.
+
+        The basis never changes which field is returned; it only feeds
+        ``binding_status`` so reports can say whether the target confirmed it.
+        """
         if label in self._rule_pack.ignored_labels:
-            return None
+            return None, "ignored"
         # Source→canonical rewrites (e.g. Heapster `pod_name` → `pod`): when the
         # rewrite target is itself a canonical label, recurse so profile
         # namespacing applies. A concrete (non-canonical) target is returned
@@ -687,9 +766,9 @@ class SchemaResolver:
         if label in self._rule_pack.label_rewrites:
             target = self._rule_pack.label_rewrites[label]
             if target != label and self._is_canonical_label(target):
-                return self.resolve_label(target, metric_field=metric_field)
+                return self._resolve_label_with_basis(target, metric_field=metric_field)
             if not self._is_canonical_label(target):
-                return target
+                return target, "rule_pack"
             label = target  # canonical == label edge case; fall through
         # Passthrough profile: source-faithful. A canonical placeholder maps to
         # its declared source spelling; a raw source name stays as-is.
@@ -697,7 +776,7 @@ class SchemaResolver:
             resolved = self._rule_pack.source_label_names.get(label, label)
             if self._field_cache and resolved not in self._field_cache:
                 self._emitted_unverified_passthrough_field = True
-            return resolved
+            return resolved, "passthrough"
         self._discover_fields()
         planned = self._effective_schema_profile()
         # Metric-aware: when the label is scoped to a metric (a
@@ -713,7 +792,7 @@ class SchemaResolver:
         if metric_field and planned not in self._NAMED_PROMETHEUS_PLANS:
             scoped = self._resolve_label_scoped_to_metric(label, metric_field)
             if scoped is not None:
-                return scoped
+                return scoped, "metric_cooccurrence"
         # Source-faithful: if the target advertises the original label as a real
         # field, use it as-is. This keeps PromQL semantics intact when the target
         # has both Prometheus and OTEL aliases (common on dual-shipping clusters).
@@ -733,7 +812,7 @@ class SchemaResolver:
                 or self.is_aggregatable_field(label)
             )
         ):
-            return label
+            return label, "live_caps"
         # Fleet `prometheus.remote_write` data streams store the original
         # Prometheus label `<name>` under `prometheus.labels.<name>`. When that
         # profile is active, prefer it over the OTEL candidates below — the
@@ -744,8 +823,8 @@ class SchemaResolver:
             candidates = self._profile_namespaced_label_candidates(label, profile)
             for field_name in candidates:
                 if not self._field_cache or field_name in self._field_cache:
-                    return field_name
-            return candidates[0]
+                    return field_name, "profile_plan"
+            return candidates[0], "profile_plan"
         # Native /_prometheus endpoint: labels are always stored as `labels.<name>`.
         # Return the namespaced form unconditionally — OTel candidates do not exist
         # in this layout, so falling through to them would emit wrong field names.
@@ -754,11 +833,11 @@ class SchemaResolver:
             candidates = self._profile_namespaced_label_candidates(label, profile)
             for field_name in candidates:
                 if not self._field_cache or field_name in self._field_cache:
-                    return field_name
-            return candidates[0]
+                    return field_name, "profile_plan"
+            return candidates[0], "profile_plan"
         # Otherwise, fall back to OTEL/Prometheus normalization candidates.
         if label in self._discovered_mappings:
-            return self._discovered_mappings[label]
+            return self._discovered_mappings[label], "discovered"
         # Reaching here, the source label is absent from the target's live
         # capabilities (or discovery never ran) and no known profile applies, so
         # whatever field we emit below is an unverified guess that may not match
@@ -766,8 +845,8 @@ class SchemaResolver:
         self._emitted_unverified_otel_default = True
         candidates = self._candidate_fields(label)
         if candidates:
-            return candidates[0]
-        return label
+            return candidates[0], "otel_default"
+        return label, "otel_default"
 
     def _resolve_label_scoped_to_metric(self, label, metric_field):
         """Resolve a label to the candidate field that co-occurs with the metric.

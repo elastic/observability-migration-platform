@@ -25,9 +25,18 @@ RUNTIME_ERROR_ROLLUPS = {
     "upload_failed",
     "smoke_failed",
     "browser_failed",
+    # A native PROMQL panel bound to a control with no options: Kibana sends
+    # the unset parameter as null and the query fails to parse.
+    "control_null_param",
 }
 RUNTIME_WARNING_ROLLUPS = {
     "empty_result",
+    # Post-upload smoke saw a label bound to a field the data lacks: an
+    # all-null breakdown series, or a control with no options filtering it.
+    "null_series",
+    "control_unbound",
+    # Smoke saw a duration axis whose every tick renders the same ("0 ms").
+    "unreadable_axis",
     "not_runtime_checked",
     "source_execution_failed",
     "validation_skipped",
@@ -206,7 +215,14 @@ def _runtime_state(
 ) -> dict[str, Any]:
     dashboard_runtime = build_runtime_summary(dashboard_result) if dashboard_result else {}
     rollups = set(_runtime_rollups(panel_result, validation_record, dashboard_result))
-    smoke_status = "fail" if "smoke_failed" in rollups else "empty_result" if "empty_result" in rollups else "not_runtime_checked" if "not_runtime_checked" in rollups else "not_run"
+    smoke_status = (
+        "fail" if rollups & {"smoke_failed", "control_null_param"}
+        else "empty_result" if "empty_result" in rollups
+        else "binding_gap" if rollups & {"null_series", "control_unbound"}
+        else "unreadable_axis" if "unreadable_axis" in rollups
+        else "not_runtime_checked" if "not_runtime_checked" in rollups
+        else "not_run"
+    )
     browser_status = "fail" if "browser_failed" in rollups else "not_run"
     return {
         "upload": dashboard_runtime.get("upload", {"status": "not_run", "error": ""}),

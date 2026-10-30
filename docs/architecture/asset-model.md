@@ -22,6 +22,26 @@ All migrated assets use the unified `AssetStatus` enum:
 | `requires_manual` | — | `manual_required` |
 | `not_feasible` | `blocked` | `not_feasible` |
 
+### Target Binding (orthogonal to status)
+
+Status says whether a query was translated faithfully; it does not say whether
+the query's label fields exist in the target data. That second axis is carried
+on the result contracts in `core/reporting/report.py`:
+
+- `PanelResult.target_binding` — `{"status", "fields"}`. `fields[]` holds one
+  entry per label field the final query emits (`label`, `field`, `basis`,
+  `status`); `status` is the worst of `missing` > `guessed` > `asserted` >
+  `verified`, or `none` when the query emits no label field.
+- `MigrationResult.control_bindings` — the same shape per emitted control, plus
+  `variable`.
+
+Helpers live in `core/target_binding.py`; the Grafana `SchemaResolver` records
+the `basis` (`live_caps`, `metric_cooccurrence`, `discovered`, `profile_plan`,
+`rule_pack`, `passthrough`, `otel_default`, `promql_label`) while it resolves
+labels. Binding never changes a panel's status; post-upload smoke evidence
+(`null_series`, `control_unbound`, `control_null_param` runtime rollups) is what
+moves the verification gate. See [Target binding](../command-contract.md#target-binding).
+
 ## DashboardIR
 
 The top-level container: `title`, `description`, `filters`, `settings`,

@@ -3,12 +3,26 @@
 
 from __future__ import annotations
 
+import argparse
 import sys
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
 ASSET_CHOICES = ("dashboards", "alerts", "all")
+
+
+class RecordExplicitAction(argparse.Action):
+    """Store the value and mark ``<dest>_explicit`` True when the flag is given.
+
+    argparse cannot tell an omitted flag from one passed with its default, but
+    the difference matters for ``--field-profile``: the built-in ``otel``
+    default maps labels by guess, an explicit ``otel`` is the operator's call.
+    """
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        setattr(namespace, f"{self.dest}_explicit", True)
 
 _DOCS_URL = "https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md"
 

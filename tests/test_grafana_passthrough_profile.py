@@ -293,6 +293,7 @@ class TestGrafanaPassthroughIntegration(unittest.TestCase):
     def test_dashboard_resolver_inherits_passthrough(self):
         args = SimpleNamespace(
             field_profile="passthrough",
+            field_profile_explicit=True,
             es_url="https://es",
             esql_index="metrics-*",
             data_view="metrics-ui-*",
@@ -314,6 +315,7 @@ class TestGrafanaPassthroughIntegration(unittest.TestCase):
             es_api_key="key",
             verify="/tmp/test-ca.pem",
             field_profile="passthrough",
+            field_profile_explicit=True,
         )
 
     def test_alert_resolver_inherits_passthrough(self):

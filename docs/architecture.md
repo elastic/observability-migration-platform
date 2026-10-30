@@ -145,6 +145,7 @@ release is swept at the start of the next run.
 | `observability_migration/core/assets/` | Canonical asset contracts such as `DashboardIR`, `PanelIR`, `QueryIR`, `VisualIR`, and `OperationalIR` |
 | `observability_migration/core/interfaces/` | Source/target adapter ABCs and registries |
 | `observability_migration/core/reporting/report.py` | Shared result dataclasses and report helpers |
+| `observability_migration/core/target_binding.py` | Label-field provenance ("target binding"): capture, per-asset summary, and status counts behind the migration summary's `Target binding` line |
 | `observability_migration/core/verification/comparators.py` | Comparator helpers and verification support types |
 | `observability_migration/targets/kibana/emit/` | Shared Kibana panel/layout/display emission helpers |
 | `observability_migration/targets/kibana/native_artifacts.py` | Writes `native/*.native.json`, `ir/*.ir.json`, and `native/index.json` — the primary Dashboard-as-Code review artifacts, unconditional on every dashboard run |

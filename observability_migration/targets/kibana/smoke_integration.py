@@ -62,13 +62,21 @@ def merge_smoke_into_results(
 ) -> dict[str, Any]:
     smoke_by_id, smoke_by_title = _build_smoke_dashboard_indexes(smoke_report)
     if not smoke_by_id and not smoke_by_title:
-        return {"merged": 0, "smoke_failed": 0, "browser_failed": 0, "empty_result": 0, "not_runtime_checked": 0}
+        return {
+            "merged": 0, "smoke_failed": 0, "browser_failed": 0, "empty_result": 0,
+            "not_runtime_checked": 0, "null_series": 0, "control_unbound": 0,
+            "control_null_param": 0, "unreadable_axis": 0,
+        }
 
     merged = 0
     smoke_failed = 0
     browser_failed = 0
     empty_result = 0
     not_runtime_checked = 0
+    null_series = 0
+    control_unbound = 0
+    control_null_param = 0
+    unreadable_axis = 0
 
     for result in results:
         smoke_dashboard = _match_smoke_dashboard(result, smoke_by_id, smoke_by_title)
@@ -77,6 +85,21 @@ def merge_smoke_into_results(
         if getattr(result, "kibana_saved_object_id", "") != str(smoke_dashboard.get("id", "") or ""):
             setattr(result, "kibana_saved_object_id", str(smoke_dashboard.get("id", "") or ""))
         smoke_panels = _panel_buckets(smoke_dashboard)
+        # Panels filtered by a control that has no options: the filter is
+        # unusable, and native PROMQL ones fail while it has no selection.
+        unbound_titles = {
+            title
+            for control in smoke_dashboard.get("empty_controls", []) or []
+            for title in control.get("dependent_panels", []) or []
+        }
+        unreadable_titles = {
+            str(panel.get("panel", "")) for panel in smoke_dashboard.get("unreadable_axis_panels", []) or []
+        }
+        null_param_titles = {
+            title
+            for control in smoke_dashboard.get("empty_controls", []) or []
+            for title in control.get("native_promql_dependents", []) or []
+        }
         for panel_result in getattr(result, "panel_results", []) or []:
             title = str(getattr(panel_result, "title", ""))
             matches = smoke_panels.get(title, [])
@@ -102,6 +125,23 @@ def merge_smoke_into_results(
                     rollups.append("not_runtime_checked")
                     not_runtime_checked += 1
                     merged += 1
+            elif status == "null_series":
+                if "null_series" not in rollups:
+                    rollups.append("null_series")
+                    null_series += 1
+                    merged += 1
+            if title in unbound_titles and "control_unbound" not in rollups:
+                rollups.append("control_unbound")
+                control_unbound += 1
+                merged += 1
+            if title in unreadable_titles and "unreadable_axis" not in rollups:
+                rollups.append("unreadable_axis")
+                unreadable_axis += 1
+                merged += 1
+            if title in null_param_titles and "control_null_param" not in rollups:
+                rollups.append("control_null_param")
+                control_null_param += 1
+                merged += 1
 
             panel_result.runtime_rollups = rollups
 
@@ -125,6 +165,10 @@ def merge_smoke_into_results(
         "browser_failed": browser_failed,
         "empty_result": empty_result,
         "not_runtime_checked": not_runtime_checked,
+        "null_series": null_series,
+        "control_unbound": control_unbound,
+        "control_null_param": control_null_param,
+        "unreadable_axis": unreadable_axis,
     }
 
 

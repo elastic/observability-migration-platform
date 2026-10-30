@@ -12,13 +12,15 @@ import re
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import requests
 
 from observability_migration.core.http import apply_tls
 
-from .esql_validate import _validation_params_for_query, materialize_dashboard_time_query
+from .esql_validate import _iso_z, _validation_params_for_query, materialize_dashboard_time_query
+from .schema import SchemaResolver
 
 DEFAULT_CHROME_CANDIDATES = (
     "chrome",
@@ -197,6 +199,14 @@ def parse_args():
         "--fail-on-empty-panels",
         action="store_true",
         help="Exit non-zero when validated panels return zero rows.",
+    )
+    parser.add_argument(
+        "--fail-on-binding-gaps",
+        action="store_true",
+        help=(
+            "Exit non-zero when a panel's breakdown column is null in every row or "
+            "an ES|QL control has no options (label bound to a field the data lacks)."
+        ),
     )
     parser.add_argument(
         "--fail-on-not-runtime-checked",
@@ -431,6 +441,127 @@ def extract_dashboard_filter_dsl(attributes):
     return {"bool": bool_query}
 
 
+# Result column types that identify a series (breakdown, legend, control value)
+# rather than carry a measurement.
+_DIMENSION_COLUMN_TYPES = {"keyword", "text", "ip", "version", "boolean"}
+_MEASURE_COLUMN_TYPES = {
+    "double", "float", "half_float", "scaled_float", "long", "integer",
+    "short", "byte", "unsigned_long", "counter_double", "counter_long",
+    "counter_integer", "aggregate_metric_double",
+}
+
+
+def _null_dimension_columns(columns, values):
+    """Dimension columns that are null in every row while a measure has data.
+
+    That shape is a label bound to a field the data does not carry: Kibana draws
+    the values as one ``(null)`` series instead of one series per label value.
+    A result with no measure values is an empty panel, not this.
+    """
+    if not values:
+        return []
+    measure_idx = [i for i, col in enumerate(columns) if col.get("type") in _MEASURE_COLUMN_TYPES]
+    if not any(i < len(row) and row[i] is not None for row in values for i in measure_idx):
+        return []
+    return [
+        col.get("name", "")
+        for i, col in enumerate(columns)
+        if col.get("type") in _DIMENSION_COLUMN_TYPES
+        and all(i >= len(row) or row[i] is None for row in values)
+    ]
+
+
+def _all_measures_null(columns, values):
+    """Rows came back but every measure in them is null.
+
+    Kibana draws "No results found" for this, yet the row count says the query
+    worked. The usual cause is arithmetic on a zero or missing operand: ES|QL
+    returns null for ``x / 0`` (e.g. Redis memory % when ``maxmemory`` is 0).
+    """
+    measure_idx = [i for i, col in enumerate(columns) if col.get("type") in _MEASURE_COLUMN_TYPES]
+    if not values or not measure_idx:
+        return False
+    return all(i >= len(row) or row[i] is None for row in values for i in measure_idx)
+
+
+def _column_max_abs(columns, values):
+    """Largest absolute value per measure column (columns with no value omitted)."""
+    out = {}
+    for i, col in enumerate(columns):
+        if col.get("type") not in _MEASURE_COLUMN_TYPES:
+            continue
+        numbers = [
+            abs(row[i]) for row in values
+            if i < len(row) and isinstance(row[i], int | float) and not isinstance(row[i], bool)
+        ]
+        if numbers:
+            out[col.get("name", "")] = max(numbers)
+    return out
+
+
+# Seconds per Kibana duration-format ``fromUnit``.
+_KIBANA_DURATION_UNIT_SECONDS = {
+    "picoseconds": 1e-12, "nanoseconds": 1e-9, "microseconds": 1e-6, "milliseconds": 1e-3,
+    "seconds": 1.0, "minutes": 60.0, "hours": 3600.0, "days": 86400.0, "weeks": 604800.0,
+}
+
+
+def _panel_duration_formats(panel):
+    """``(field, fromUnit, decimals)`` for each duration-formatted Lens column.
+
+    Read from the stored Lens state, i.e. what Kibana will actually render.
+    Kibana 9.6+ stores the Dashboards API ``duration`` (``to: auto``) as
+    ``toUnit: humanizePrecise`` with ``decimals: 0`` (9.5 stored 2;
+    elastic/kibana#301576).
+    """
+    state = (((panel.get("embeddableConfig") or {}).get("attributes") or {}).get("state") or {})
+    found = []
+    for datasource in (state.get("datasourceStates") or {}).values():
+        if not isinstance(datasource, dict):
+            continue
+        layers = datasource.get("layers")
+        for layer in layers.values() if isinstance(layers, dict) else []:
+            columns = layer.get("columns") if isinstance(layer, dict) else None
+            # Text-based (ES|QL) layers list column objects; form-based layers
+            # key them by column id.
+            if isinstance(columns, dict):
+                columns = list(columns.values())
+            for column in columns if isinstance(columns, list) else []:
+                if not isinstance(column, dict):
+                    continue
+                fmt = ((column.get("params") or {}).get("format") or {})
+                if fmt.get("id") != "duration":
+                    continue
+                params = fmt.get("params") or {}
+                found.append((column.get("fieldName", ""), params.get("fromUnit", "seconds"), params.get("decimals")))
+    return found
+
+
+def _unreadable_duration_axes(panel, column_max_abs):
+    """Duration columns whose every value renders identically (#480).
+
+    The duration formatter's smallest output unit is the millisecond, so with
+    ``decimals`` d it cannot tell apart values under 10^-d ms: a 0.2 ms series
+    formatted with ``decimals: 0`` reads "0 ms" on every axis tick.
+    """
+    findings = []
+    for field_name, from_unit, decimals in _panel_duration_formats(panel):
+        factor = _KIBANA_DURATION_UNIT_SECONDS.get(str(from_unit))
+        peak = column_max_abs.get(field_name)
+        if factor is None or not isinstance(decimals, int) or not peak:
+            continue
+        if peak * factor < 1e-3 * 10 ** (-decimals):
+            findings.append({"column": field_name, "peak_seconds": peak * factor, "decimals": decimals})
+    return findings
+
+
+_NULL_VALUES_REASON = (
+    "every value the query returned is null; Kibana shows \"No results found\". "
+    "For a ratio panel, check whether the divisor metric is 0 or missing "
+    "(ES|QL returns null for division by zero)."
+)
+
+
 def validate_esql(
     es_url,
     query,
@@ -439,8 +570,15 @@ def validate_esql(
     session=None,
     dsl_filter=None,
     identifier_params=None,
+    keep_values=False,
+    control_values=None,
+    time_window=None,
 ):
-    materialized_query = materialize_dashboard_time_query(query)
+    if time_window is not None:
+        seconds = int(time_window.total_seconds())
+        materialized_query = materialize_dashboard_time_query(query, time_from=f"NOW() - {seconds} seconds")
+    else:
+        materialized_query = materialize_dashboard_time_query(query)
     headers = {"Authorization": f"ApiKey {es_api_key}"} if es_api_key else None
     client = session or requests
     body = {"query": materialized_query}
@@ -448,10 +586,27 @@ def validate_esql(
         materialized_query,
         identifier_params=identifier_params,
     )
+    if control_values:
+        params = [
+            {name: control_values.get(name, value) for name, value in param.items()} for param in params
+        ]
+    end = datetime.now(UTC)
+    start = end - (time_window if time_window is not None else timedelta(hours=1))
+    if time_window is not None:
+        # Native PROMQL keeps ?_tstart/?_tend as date params (see
+        # materialize_dashboard_time_query); bind them to the same window.
+        bounds = {"_tstart": _iso_z(start), "_tend": _iso_z(end)}
+        params = [{name: bounds.get(name, value) for name, value in param.items()} for param in params]
     if params:
         body["params"] = params
-    if dsl_filter:
-        body["filter"] = dsl_filter
+    # Kibana sends the dashboard time range as a request filter, and
+    # Elasticsearch drops indices with no documents in range before resolving
+    # mappings. Without it, an old index that maps a label differently (an
+    # object ``resource`` from an OTel index next to the Prometheus keyword)
+    # fails the query with "Cannot use field ... due to ambiguities" although
+    # the panel renders fine for a viewer.
+    time_filter = {"range": {"@timestamp": {"gte": _iso_z(start), "lte": _iso_z(end)}}}
+    body["filter"] = {"bool": {"filter": [time_filter, dsl_filter]}} if dsl_filter else time_filter
     response = client.post(
         f"{es_url}/_query",
         params={"format": "json"},
@@ -461,13 +616,21 @@ def validate_esql(
     )
     if response.status_code == 200:
         payload = response.json()
-        return {
+        columns = payload.get("columns", []) or []
+        values = payload.get("values", []) or []
+        result = {
             "status": "pass",
-            "rows": len(payload.get("values", [])),
-            "columns": [column.get("name", "") for column in payload.get("columns", [])],
+            "rows": len(values),
+            "columns": [column.get("name", "") for column in columns],
+            "null_columns": _null_dimension_columns(columns, values),
+            "null_values": _all_measures_null(columns, values),
+            "column_max_abs": _column_max_abs(columns, values),
             "error": "",
             "materialized_query": materialized_query,
         }
+        if keep_values:
+            result["values"] = values
+        return result
     body = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
     error = body.get("error", {})
     if isinstance(error, dict):
@@ -854,11 +1017,334 @@ def capture_browser_audit(saved_object, args):
 
 
 def _panel_title(panel):
+    embeddable = panel.get("embeddableConfig", {}) or {}
     return (
-        panel.get("embeddableConfig", {}).get("attributes", {}).get("title")
+        (embeddable.get("attributes", {}) or {}).get("title")
+        # Dashboards API uploads keep the title on the embeddable config, not
+        # on the Lens attributes; without it panels are reported by UUID and
+        # smoke results never match migration panels by title.
+        or embeddable.get("title")
         or panel.get("title")
         or panel.get("panelIndex", "")
     )
+
+
+_RELATIVE_TIME_RE = re.compile(r"^now-(\d+)([smhdwMy])$")
+_RELATIVE_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800, "M": 2592000, "y": 31536000}
+
+
+def relative_time_window(time_from, time_to="now"):
+    """``now-15m`` → 15 minutes; anything not relative to now → ``None``."""
+    if str(time_to or "now").strip() != "now":
+        return None
+    match = _RELATIVE_TIME_RE.match(str(time_from or "").strip())
+    if not match:
+        return None
+    return timedelta(seconds=int(match.group(1)) * _RELATIVE_UNIT_SECONDS[match.group(2)])
+
+
+def _panel_time_window(panel, dashboard_window):
+    """The window a viewer sees for *panel* on load: its own override, else the dashboard's."""
+    embeddable = panel.get("embeddableConfig") or {}
+    override = embeddable.get("timeRange") or embeddable.get("time_range") or {}
+    if isinstance(override, dict):
+        window = relative_time_window(override.get("from"), override.get("to"))
+        if window is not None:
+            return window
+    return dashboard_window
+
+
+_CONTROL_WILDCARD_OPTIONS = {"", ".*", "*"}
+_UNKNOWN_COLUMN_RE = re.compile(r"Unknown column \[`?([^\]`]+)`?\]")
+
+
+def _as_json(value):
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    return value or {}
+
+
+def extract_dashboard_controls(attributes):
+    """ES|QL controls from a dashboard saved object, either storage shape.
+
+    Dashboards API uploads keep controls in ``pinned_panels``; older objects
+    use ``controlGroupInput.panelsJSON``.
+    """
+    entries = []
+    pinned = _as_json(attributes.get("pinned_panels"))
+    if isinstance(pinned, dict):
+        pinned = pinned.get("panels", pinned)
+    entries.extend(pinned.values() if isinstance(pinned, dict) else pinned or [])
+    legacy = _as_json((attributes.get("controlGroupInput") or {}).get("panelsJSON"))
+    entries.extend(legacy.values() if isinstance(legacy, dict) else legacy or [])
+
+    controls = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        config = entry.get("config") or entry.get("explicitInput") or {}
+        query = str(config.get("esql_query") or config.get("esqlQuery") or "").strip()
+        variable = str(config.get("variable_name") or config.get("variableName") or "").strip()
+        if not query or not variable:
+            continue
+        selected = config.get("selected_options")
+        if selected is None:
+            selected = config.get("selectedOptions")
+        multi = (
+            str(config.get("variable_type") or config.get("variableType") or "") == "multi_values"
+            or config.get("single_select", config.get("singleSelect")) is False
+        )
+        controls.append(
+            {
+                "title": str(config.get("title") or variable),
+                "variable": variable,
+                "query": query,
+                "selected": [v for v in selected or [] if isinstance(v, str | int | float) and not isinstance(v, bool)],
+                "multi": multi,
+            }
+        )
+    return controls
+
+
+def control_param_values(controls):
+    """``{variable: value}`` Kibana sends for each control's default selection.
+
+    Without these, smoke bound every ``?var`` to ``.*``; a query that tests a
+    multi-value control with ``MV_COUNT(?var) == 0`` / ``MV_CONTAINS(?var, f)``
+    then matched nothing and smoke reported an empty panel Kibana does not show.
+    Controls with no default selection are left to the generic default.
+    """
+    values = {}
+    for control in controls:
+        if control.get("selected"):
+            values[control["variable"]] = list(control["selected"]) if control.get("multi") else control["selected"][0]
+    return values
+
+
+def _control_option_count(values):
+    options = {
+        str(row[0])
+        for row in values or []
+        if row and row[0] is not None and str(row[0]) not in _CONTROL_WILDCARD_OPTIONS
+    }
+    return len(options)
+
+
+def _panels_binding_variable(variable, panel_queries):
+    """Titles of panels whose queries bind ``?variable`` (not ``??variable``)."""
+    pattern = re.compile(r"(?<!\?)\?" + re.escape(variable) + r"\b")
+    bound, native = [], []
+    for title, queries in panel_queries:
+        hits = [query for query in queries if pattern.search(query)]
+        if not hits:
+            continue
+        bound.append(title)
+        if any(query.lstrip().upper().startswith("PROMQL") for query in hits):
+            native.append(title)
+    return bound, native
+
+
+_QUERY_INDEX_RE = re.compile(r"^\s*(?:FROM|TS)\s+([^\s|]+)", re.IGNORECASE)
+
+
+def _query_index(query):
+    match = _QUERY_INDEX_RE.match(query or "")
+    return match.group(1) if match else ""
+
+
+def _alternative_label_fields(field_name):
+    """Other spellings the same Prometheus label can have on a target."""
+    labels = [
+        label
+        for label, candidates in SchemaResolver.PROM_TO_OTEL_CANDIDATES.items()
+        if field_name in candidates
+    ]
+    for prefix in ("prometheus.labels.", "labels."):
+        if field_name.startswith(prefix):
+            labels.append(field_name[len(prefix):])
+            break
+    else:
+        if "." not in field_name:
+            labels.append(field_name)
+    alternatives = []
+    for label in labels:
+        alternatives.extend((label, f"labels.{label}", f"prometheus.labels.{label}"))
+        alternatives.extend(SchemaResolver.PROM_TO_OTEL_CANDIDATES.get(label, []))
+    seen = {field_name}
+    ordered = []
+    for alternative in alternatives:
+        if alternative not in seen:
+            seen.add(alternative)
+            ordered.append(alternative)
+    return ordered
+
+
+def _existing_fields(es_url, index, fields, timeout, es_api_key="", verify: bool | str = True):
+    if not es_url or not index or not fields:
+        return []
+    headers = {"Authorization": f"ApiKey {es_api_key}"} if es_api_key else None
+    try:
+        response = requests.get(
+            f"{es_url}/{index}/_field_caps",
+            params={"fields": ",".join(fields), "ignore_unavailable": "true"},
+            headers=headers,
+            timeout=timeout,
+            verify=verify,
+        )
+        if response.status_code != 200:
+            return []
+        present = response.json().get("fields", {}) or {}
+    except (requests.RequestException, ValueError):
+        return []
+    return [name for name in fields if name in present]
+
+
+def _substitute_field(query, old, new):
+    replacement = f"`{new}`" if "." in new else new
+    pattern = re.compile(r"(?<![\w.?])`?" + re.escape(old) + r"`?(?![\w.])")
+    return pattern.sub(lambda _match: replacement, query)
+
+
+# Bounds the extra queries a hint may run per finding.
+_MAX_HINT_PROBES = 4
+
+
+def binding_gap_hint(
+    field_name,
+    query,
+    es_url,
+    timeout,
+    *,
+    kind,
+    es_api_key="",
+    verify: bool | str = True,
+    dsl_filter=None,
+    identifier_params=None,
+    control_values=None,
+    time_window=None,
+):
+    """One-line remediation for a label field that has no values in *query*.
+
+    Field existence is not enough evidence: on a shared ``metrics-*`` pattern
+    another stream can carry the alternative spelling. So each candidate that
+    exists is substituted into the same query, and only spellings that then
+    return values (control options, or a non-null breakdown) are suggested.
+    """
+    index = _query_index(query)
+    present = _existing_fields(
+        es_url, index, _alternative_label_fields(field_name), timeout, es_api_key=es_api_key, verify=verify,
+    )
+    # Prometheus spellings first: they are what a Prometheus-shaped target has.
+    present.sort(key=lambda name: 0 if "." not in name or name.startswith(("labels.", "prometheus.labels.")) else 1)
+    working = []
+    probe_failed = False
+    for alternative in present[:_MAX_HINT_PROBES]:
+        outcome = validate_esql(
+            es_url,
+            _substitute_field(query, field_name, alternative),
+            timeout,
+            es_api_key=es_api_key,
+            dsl_filter=dsl_filter,
+            identifier_params=identifier_params,
+            keep_values=True,
+            control_values=control_values,
+            time_window=time_window,
+        )
+        if outcome["status"] != "pass":
+            probe_failed = True
+            continue
+        if kind == "control":
+            has_values = _control_option_count(outcome.get("values")) > 0
+        else:
+            has_values = bool(outcome["rows"]) and alternative not in outcome.get("null_columns", [])
+        if has_values:
+            working.append(alternative)
+    if not working and probe_failed:
+        # The query still fails with the other spelling (usually because it
+        # also names other missing fields), so nothing was proven either way.
+        hint = (
+            f"`{field_name}` is not on these documents, but {', '.join(f'`{name}`' for name in present)} "
+            f"exist on {index}; the query has other missing fields too. Re-migrate with --es-url "
+            "(and --esql-index) so labels resolve against the target"
+        )
+        if any(name.startswith("labels.") for name in present):
+            hint += ", or with --field-profile prometheus_native"
+        return hint + "."
+    if not working:
+        checked = f" (checked {', '.join(f'`{name}`' for name in present)})" if present else ""
+        return (
+            f"`{field_name}` has no values for these documents and no other spelling of the "
+            f"label does either{checked}: the label is likely not ingested for this metric "
+            "(a data gap, not a field-mapping error)."
+        )
+    hint = (
+        f"`{field_name}` has no values, but the same query returns values with "
+        f"{', '.join(f'`{name}`' for name in working)}. Re-migrate with --es-url (and "
+        "--esql-index) so labels resolve against the target"
+    )
+    if any(name.startswith("labels.") for name in working):
+        hint += ", or with --field-profile prometheus_native"
+    elif any(name.startswith("prometheus.labels.") for name in working):
+        hint += ", or with --field-profile prometheus_remote_write / prometheus_metrics"
+    return hint + "."
+
+
+def inspect_controls(
+    controls, panel_queries, es_url, timeout, es_api_key="", verify: bool | str = True, control_values=None,
+    time_window=None,
+):
+    """Run each control's options query and flag controls with no options.
+
+    A control with no options cannot be used to filter, and Kibana sends its
+    unset ``?variable`` as null: ES|QL panels that guard for that still render,
+    but a native PROMQL matcher fails with ``Parameter [?var] cannot be null``.
+    """
+    session = requests.Session()
+    apply_tls(session, verify)
+    results = []
+    for control in controls:
+        # Chained options queries see the other controls' selections, as in Kibana.
+        others = {k: v for k, v in (control_values or {}).items() if k != control["variable"]}
+        outcome = validate_esql(
+            es_url, control["query"], timeout, es_api_key=es_api_key, session=session, keep_values=True,
+            control_values=others, time_window=time_window,
+        )
+        bound, native = _panels_binding_variable(control["variable"], panel_queries)
+        record = {
+            "title": control["title"],
+            "variable": control["variable"],
+            "query": control["query"],
+            "dependent_panels": bound,
+            "native_promql_dependents": native,
+        }
+        if outcome["status"] == "fail":
+            record.update(status="fail", options=0, error=outcome["error"])
+            # A control whose options query errors has no options either. When
+            # the error names the missing field, probe its other spellings.
+            missing = _UNKNOWN_COLUMN_RE.search(outcome["error"] or "")
+            if missing:
+                record["field"] = missing.group(1)
+                record["hint"] = binding_gap_hint(
+                    missing.group(1), control["query"], es_url, timeout,
+                    kind="control", es_api_key=es_api_key, verify=verify, control_values=others,
+                    time_window=time_window,
+                )
+        else:
+            options = _control_option_count(outcome.get("values"))
+            record.update(status="ok" if options else "no_options", options=options, error="")
+            if not options:
+                field_name = (outcome.get("columns") or [""])[0]
+                record["field"] = field_name
+                record["hint"] = binding_gap_hint(
+                    field_name, control["query"], es_url, timeout,
+                    kind="control", es_api_key=es_api_key, verify=verify, control_values=others,
+                    time_window=time_window,
+                )
+        results.append(record)
+    return results
 
 
 def _path_value(payload, *path):
@@ -1032,7 +1518,7 @@ def _runtime_gap_reason(panel: dict) -> str:
 
 def _validate_panel_queries(
     es_url, queries, timeout, es_api_key="", validation_workers=1, verify: bool | str = True,
-    dsl_filter=None, identifier_params=None,
+    dsl_filter=None, identifier_params=None, control_values=None, time_window=None,
 ):
     if not queries:
         return []
@@ -1048,6 +1534,8 @@ def _validate_panel_queries(
             session=session,
             dsl_filter=dsl_filter,
             identifier_params=identifier_params,
+            control_values=control_values,
+            time_window=time_window,
         )
 
     workers = max(1, int(validation_workers or 1))
@@ -1063,6 +1551,8 @@ def _validate_panel_queries(
                 session=session,
                 dsl_filter=dsl_filter,
                 identifier_params=identifier_params,
+                control_values=control_values,
+                time_window=time_window,
             )
             for query in queries
         ]
@@ -1102,6 +1592,10 @@ def inspect_dashboard(
                 }
             ],
             "empty_panels": [],
+            "null_series_panels": [],
+            "unreadable_axis_panels": [],
+            "controls": [],
+            "empty_controls": [],
             "not_runtime_checked_panels": [],
             "lens_by_design_panels": [],
             "unexpected_runtime_gap_panels": [],
@@ -1114,18 +1608,32 @@ def inspect_dashboard(
             "panels": [],
         }
     dashboard_filter = extract_dashboard_filter_dsl(attributes)
+    dashboard_controls = extract_dashboard_controls(attributes)
+    control_values = control_param_values(dashboard_controls)
+    # Query the window a viewer sees on load: the saved dashboard range when
+    # the dashboard restores time, else the validator default.
+    dashboard_window = (
+        relative_time_window(attributes.get("timeFrom"), attributes.get("timeTo"))
+        if attributes.get("timeRestore") else None
+    )
     panel_results = []
     failing_panels = []
     empty_panels = []
+    null_series_panels = []
+    unreadable_axis_panels = []
     not_runtime_checked_panels = []
     lens_by_design_panels = []
     unexpected_runtime_gap_panels = []
     non_query_panels = []
+    panel_queries = []
+    hint_cache = {}
 
     for panel in panels:
         title = _panel_title(panel)
         panel_type = str(panel.get("type", "") or "")
         queries = extract_panel_queries(panel)
+        if queries:
+            panel_queries.append((title, queries))
         expectation = _panel_runtime_expectation(panel, queries)
         if not queries:
             result = {
@@ -1146,6 +1654,7 @@ def inspect_dashboard(
                     unexpected_runtime_gap_panels.append(result)
             continue
 
+        panel_window = _panel_time_window(panel, dashboard_window)
         validations = _validate_panel_queries(
             es_url,
             queries,
@@ -1155,10 +1664,21 @@ def inspect_dashboard(
             verify=verify,
             dsl_filter=dashboard_filter,
             identifier_params=identifier_params,
+            control_values=control_values,
+            time_window=panel_window,
         )
         failing = [item for item in validations if item["status"] == "fail"]
         rows = max((item["rows"] for item in validations), default=0)
-        result_status = "fail" if failing else "empty" if rows == 0 else "pass"
+        null_columns = list(
+            dict.fromkeys(name for item in validations for name in item.get("null_columns", []) or [])
+        )
+        null_values = bool(validations) and all(item.get("null_values") for item in validations)
+        result_status = (
+            "fail" if failing
+            else "empty" if rows == 0 or null_values
+            else "null_series" if null_columns
+            else "pass"
+        )
         result = {
             "panel": title,
             "type": panel_type,
@@ -1168,6 +1688,52 @@ def inspect_dashboard(
             "validation_mode": "esql",
             "checked_queries": len(queries),
         }
+        if result_status == "empty" and rows:
+            result["empty_reason"] = _NULL_VALUES_REASON
+        peaks = {}
+        for item in validations:
+            for name, peak in (item.get("column_max_abs") or {}).items():
+                peaks[name] = max(peak, peaks.get(name, 0))
+        unreadable = _unreadable_duration_axes(panel, peaks) if result_status == "pass" else []
+        if unreadable:
+            result["unreadable_axes"] = unreadable
+            unreadable_axis_panels.append(result)
+        if result_status == "null_series":
+            result["null_columns"] = null_columns
+            hint_query = next(
+                (item["materialized_query"] for item in validations if item.get("null_columns")),
+                queries[0],
+            )
+            result["hints"] = [
+                binding_gap_hint(
+                    name, hint_query, es_url, timeout, kind="panel", es_api_key=es_api_key,
+                    verify=verify, dsl_filter=dashboard_filter, identifier_params=identifier_params,
+                    control_values=control_values, time_window=panel_window,
+                )
+                for name in null_columns
+            ]
+        if result_status == "fail":
+            # A label bound to a field no stream maps fails outright
+            # ("Unknown column [service.instance.id]") instead of drawing a
+            # (null) series; give it the same evidence-backed hint.
+            missing = sorted({
+                match.group(1)
+                for item in failing
+                for match in _UNKNOWN_COLUMN_RE.finditer(item.get("error") or "")
+            })
+            hints = []
+            for name in missing:
+                key = (name, _query_index(queries[0]))
+                if key not in hint_cache:
+                    hint_cache[key] = binding_gap_hint(
+                        name, failing[0]["materialized_query"], es_url, timeout, kind="panel",
+                        es_api_key=es_api_key, verify=verify, dsl_filter=dashboard_filter,
+                        identifier_params=identifier_params, control_values=control_values,
+                        time_window=panel_window,
+                    )
+                hints.append(hint_cache[key])
+            if hints:
+                result["hints"] = hints
         if len(queries) == 1:
             result["query"] = queries[0]
             result["materialized_query"] = validations[0]["materialized_query"]
@@ -1181,7 +1747,20 @@ def inspect_dashboard(
             failing_panels.append(result)
         elif result_status == "empty":
             empty_panels.append(result)
+        elif result_status == "null_series":
+            null_series_panels.append(result)
 
+    controls = inspect_controls(
+        dashboard_controls,
+        panel_queries,
+        es_url,
+        timeout,
+        es_api_key=es_api_key,
+        verify=verify,
+        control_values=control_values,
+        time_window=dashboard_window,
+    )
+    empty_controls = [control for control in controls if control["status"] in {"no_options", "fail"}]
     layout = analyze_layout(panels)
     browser_info = browser_audit or {"status": "not_requested", "path": "", "error": "", "issues": [], "url": ""}
     return {
@@ -1192,10 +1771,14 @@ def inspect_dashboard(
             1 for result in panel_results if result["status"] not in {"no_query_expected", "not_runtime_checked"}
         ),
         "runtime_checked_panels": sum(
-            1 for result in panel_results if result["status"] in {"pass", "fail", "empty"}
+            1 for result in panel_results if result["status"] in {"pass", "fail", "empty", "null_series"}
         ),
         "failing_panels": failing_panels,
         "empty_panels": empty_panels,
+        "null_series_panels": null_series_panels,
+        "unreadable_axis_panels": unreadable_axis_panels,
+        "controls": controls,
+        "empty_controls": empty_controls,
         "not_runtime_checked_panels": not_runtime_checked_panels,
         "lens_by_design_panels": lens_by_design_panels,
         "unexpected_runtime_gap_panels": unexpected_runtime_gap_panels,
@@ -1210,12 +1793,55 @@ def inspect_dashboard(
             if layout["overlaps"] or layout["invalid_sizes"] or layout["out_of_bounds"]
             else "has_runtime_gaps"
             if not_runtime_checked_panels
+            else "has_binding_gaps"
+            if null_series_panels or empty_controls
+            else "has_unreadable_axes"
+            if unreadable_axis_panels
             else "has_empty_panels"
             if empty_panels
             else "clean"
         ),
         "panels": panel_results,
     }
+
+
+def print_panel_findings(dashboard):
+    """Print smoke findings that need an explanation: label-binding gaps (with
+    their remediation hint) and empty panels whose rows were all null."""
+    for panel in dashboard.get("failing_panels", []) or []:
+        if panel.get("hints"):
+            print(f"  error: {panel['panel']} — {str(panel.get('error') or '').splitlines()[-1][:160]}")
+            for hint in panel["hints"]:
+                print(f"    hint: {hint}")
+    for panel in dashboard.get("empty_panels", []) or []:
+        if panel.get("empty_reason"):
+            print(f"  empty: {panel['panel']} — {panel['empty_reason']}")
+    for panel in dashboard.get("unreadable_axis_panels", []) or []:
+        for axis in panel.get("unreadable_axes", []) or []:
+            print(
+                f"  unreadable axis: {panel['panel']} — `{axis['column']}` peaks at "
+                f"{axis['peak_seconds']:.3g} s, below what its duration format shows with "
+                f"{axis['decimals']} decimal(s), so every tick reads the same (e.g. \"0 ms\"). "
+                "Re-upload with an ES URL so the format is fitted to the data."
+            )
+    for panel in dashboard.get("null_series_panels", []) or []:
+        columns = ", ".join(f"`{name}`" for name in panel.get("null_columns", []))
+        print(f"  null series: {panel['panel']} — {columns} is null in all {panel['rows']} row(s)")
+        for hint in panel.get("hints", []) or []:
+            print(f"    hint: {hint}")
+    for control in dashboard.get("empty_controls", []) or []:
+        failed = f" — options query failed: {control['error'].splitlines()[-1]}" if control.get("status") == "fail" else ""
+        print(f"  control without options: {control['title']} (?{control['variable']}){failed}")
+        if control.get("hint"):
+            print(f"    hint: {control['hint']}")
+        if control.get("dependent_panels"):
+            print(f"    filters {len(control['dependent_panels'])} panel(s): {', '.join(control['dependent_panels'])}")
+        if control.get("native_promql_dependents"):
+            print(
+                "    native PROMQL panels fail in Kibana while it has no selection "
+                f"(Parameter [?{control['variable']}] cannot be null): "
+                + ", ".join(control["native_promql_dependents"])
+            )
 
 
 def build_summary(dashboards):
@@ -1240,6 +1866,12 @@ def build_summary(dashboards):
         ),
         "runtime_error_panels": sum(len(item["failing_panels"]) for item in dashboards),
         "empty_panels": sum(len(item["empty_panels"]) for item in dashboards),
+        "null_series_panels": sum(len(item.get("null_series_panels", [])) for item in dashboards),
+        "unreadable_axis_panels": sum(len(item.get("unreadable_axis_panels", [])) for item in dashboards),
+        "empty_controls": sum(len(item.get("empty_controls", [])) for item in dashboards),
+        "dashboards_with_binding_gaps": sum(
+            1 for item in dashboards if item.get("null_series_panels") or item.get("empty_controls")
+        ),
         "screenshots_captured": sum(
             1 for item in dashboards if item.get("screenshot", {}).get("status") in {"captured", "partial"}
         ),
@@ -1389,6 +2021,9 @@ def main(verify: bool | str = True):
         f"Runtime error panels: {summary['runtime_error_panels']} | "
         f"Layout issue dashboards: {summary['dashboards_with_layout_issues']} | "
         f"Empty panels: {summary['empty_panels']} | "
+        f"Null-series panels: {summary['null_series_panels']} | "
+        f"Controls without options: {summary['empty_controls']} | "
+        f"Unreadable axes: {summary['unreadable_axis_panels']} | "
         f"Not runtime-checked panels: {summary['not_runtime_checked_panels']}"
     )
     if args.capture_screenshots:
@@ -1409,11 +2044,14 @@ def main(verify: bool | str = True):
             f"{dashboard['title']}: "
             f"errors={len(dashboard['failing_panels'])}, "
             f"empty={len(dashboard['empty_panels'])}, "
+            f"null_series={len(dashboard.get('null_series_panels', []))}, "
+            f"empty_controls={len(dashboard.get('empty_controls', []))}, "
             f"not_checked={len(dashboard['not_runtime_checked_panels'])}, "
             f"overlaps={len(dashboard['layout']['overlaps'])}, "
             f"screenshot={screenshot_status}, "
             f"browser={browser_status}"
         )
+        print_panel_findings(dashboard)
     print(f"Report: {output_path}")
 
     failure_reasons = []
@@ -1423,6 +2061,11 @@ def main(verify: bool | str = True):
         failure_reasons.append(f"{summary['dashboards_with_layout_issues']} dashboard(s) with layout issues")
     if args.fail_on_empty_panels and summary["empty_panels"]:
         failure_reasons.append(f"{summary['empty_panels']} empty panel(s)")
+    if getattr(args, "fail_on_binding_gaps", False) and summary["dashboards_with_binding_gaps"]:
+        failure_reasons.append(
+            f"{summary['null_series_panels']} null-series panel(s), "
+            f"{summary['empty_controls']} control(s) without options"
+        )
     if args.fail_on_not_runtime_checked and summary["not_runtime_checked_panels"]:
         failure_reasons.append(f"{summary['not_runtime_checked_panels']} panel(s) not runtime-checked")
     if args.fail_on_browser_errors and summary["dashboards_with_browser_errors"]:

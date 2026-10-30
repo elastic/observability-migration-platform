@@ -321,6 +321,83 @@ exit `0` while smoke reports empty panels or runtime errors, so inspect
 `migration_report.json`, `migration_summary.md`, and the smoke report before
 declaring the uploaded dashboard production-ready.
 
+### Target binding
+
+A panel can translate correctly and still bind its labels to fields the target
+data does not have — for example Prometheus `instance` emitted as the OTel
+`service.instance.id` against a Prometheus remote-write target that stores
+`instance` / `labels.instance`. Kibana then draws one `(null)` series per
+breakdown and the Instance control has no options; native `PROMQL` panels that
+bind the control's `?instance` fail with `Parameter [?instance] cannot be null`.
+Translation status alone cannot show this, so Grafana reports it separately.
+
+**At migrate time** the summary prints, under `Verification gate`:
+
+```text
+Target binding:      panels 0 verified / 13 guessed
+                     controls 0 verified / 2 guessed
+  Unverified label fields, e.g. instance → service.instance.id (guessed); …
+```
+
+Each emitted label field is classified (worst wins per panel/control):
+
+| Status | Meaning |
+|---|---|
+| `verified` | Live `_field_caps` advertise the field (or co-occurrence with the metric proved it). Needs `--es-url`. |
+| `asserted` | The operator chose the layout — explicit `--field-profile`, a rule-pack rewrite, or `passthrough` — but nothing checked it. |
+| `guessed` | The built-in `otel` default chose it with no target evidence (offline run, `--field-profile` omitted). |
+| `missing` | Live caps exist and do not have the field. |
+
+`migration_report.json` records this per panel (`panels[].target_binding`:
+`status` plus `fields[]` of `label`, `field`, `basis`, `status`) and per control
+(`dashboards[].control_bindings[]`, same shape plus `variable`). `guessed` or
+`missing` means: re-run with `--es-url` (and `--esql-index`) so labels resolve
+against the target, or pass the `--field-profile` that matches your ingest.
+
+**After upload**, smoke (`--smoke`, `--smoke-report`, or
+`grafana-validate-uploaded`) checks the same thing against real data:
+
+- a panel whose result has a label/breakdown column that is null in every row
+  while its values are not is reported as `null_series` (`null_series_panels`);
+- every ES|QL control's options query is run, and a control with no options
+  other than the `.*` wildcard is reported in `empty_controls`, with the panels
+  that bind its `?variable` and the native `PROMQL` ones among them;
+- each finding carries a hint proven by re-running the query with the other
+  spellings of that label: it names the spelling that returns values (and the
+  matching `--field-profile`), or says no spelling has values, i.e. a data gap.
+
+Smoke runs every query in the window a viewer sees on load: a panel's own time
+range override (e.g. "Last 1 minute"), else the dashboard's saved range when it
+restores time, else the validator default (1 hour). Like Kibana, smoke also
+sends that window as an `@timestamp` range filter on the request, so
+Elasticsearch skips indices with no documents in range; an old index that maps
+a label with a conflicting type then does not fail the query as "Cannot use
+field ... due to ambiguities". Control parameters are bound to each control's
+stored selection, as Kibana sends them.
+
+Separately, a panel whose query returns rows but every value in them is null is
+reported as `empty` (not `pass`) with an `empty_reason`: Kibana shows "No
+results found" for it. The usual cause is a ratio with a zero or missing divisor
+(ES|QL returns null for division by zero, e.g. Redis memory % with `maxmemory`
+0).
+
+Smoke also reads each panel's stored Lens duration formats and reports
+`unreadable_axis_panels` when a duration column's values all sit below what its
+format can show: Kibana 9.6+ stores the Dashboards API `duration` with
+`decimals: 0`, so a series peaking at 0.28 ms reads "0 ms" on every axis tick
+(#480; upstream [elastic/kibana#301576](https://github.com/elastic/kibana/issues/301576)). Dashboards with only that finding get status `has_unreadable_axes`; the
+merged `unreadable_axis` rollup turns the verification gate Yellow. Uploading
+with an ES URL fits such series to a readable number format.
+
+Dashboards with either binding finding get status `has_binding_gaps`; the summary adds
+`null_series_panels`, `empty_controls`, and `dashboards_with_binding_gaps`.
+`grafana-validate-uploaded --fail-on-binding-gaps` exits non-zero on them.
+Merged into migration results, `null_series` and `control_unbound` (panel
+filtered by a control with no options) turn the verification gate Yellow, and
+`control_null_param` (a native `PROMQL` panel bound to such a control) turns it
+Red. Smoke matches panels by title, which it now reads from the Dashboards API
+embeddable config, so these merge into API-uploaded dashboards.
+
 Examples below use the canonical environment names
 (`$ELASTICSEARCH_ENDPOINT`, `$KIBANA_ENDPOINT`, `$KEY`) that match
 `serverless_creds.env`. The compatibility aliases `$ES_URL`, `$KIBANA_URL`, and
@@ -439,8 +516,11 @@ non-zero; for alerts it yields an empty alert set. Each run prints
 
 `--field-profile` defaults to `otel` for every source migration, including
 Grafana (`grafana-migrate`, `obs-migrate migrate --source grafana`) and
-Datadog. Explicitly setting `--field-profile otel` is equivalent to omitting
-the flag.
+Datadog. Explicitly setting `--field-profile otel` emits the same queries as
+omitting the flag. On Grafana the two differ only in reporting: a label the
+built-in default maps without target evidence is reported as **guessed**, while
+the same mapping under an explicit profile is the operator's **asserted**
+layout (see [Target binding](#target-binding)).
 
 Both sources share the same operator model:
 
