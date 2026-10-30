@@ -709,6 +709,9 @@ def _legend_visibility(value: Any) -> str | None:
 def _truncate_config(value: Any) -> dict[str, Any] | None:
     if isinstance(value, bool):
         return {"enabled": value}
+    if value == 0:
+        # The dashboard schema's ``truncate_labels: 0`` means "do not truncate".
+        return {"enabled": False}
     if isinstance(value, int | float) and 1 <= value <= 10:
         return {"enabled": True, "max_lines": value}
     return None

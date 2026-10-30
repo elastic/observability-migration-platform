@@ -2539,6 +2539,18 @@ def test_api_format_accepts_bare_duration():
     }
 
 
+def test_legend_truncate_zero_disables_truncation():
+    # docs/dashboards/schema.json: ``truncate_labels: 0`` disables truncation.
+    assert api._api_legend({"visible": "show", "position": "bottom", "truncate_labels": 0}, "xy") == {
+        "visibility": "visible",
+        "placement": "outside",
+        "position": "bottom",
+        "layout": {"type": "grid", "truncate": {"enabled": False}},
+    }
+    assert api._truncate_config(1) == {"enabled": True, "max_lines": 1}
+    assert api._truncate_config(None) is None
+
+
 def test_heatmap_reads_legend_from_appearance():
     # Bug #5: Datadog emits heatmap legend under ``appearance.legend``.
     cfg = _map({
