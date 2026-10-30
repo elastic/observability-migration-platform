@@ -3146,13 +3146,37 @@ def test_sub_millisecond_duration_series_gets_a_readable_number_format():
 
     y = payload["panels"][0]["config"]["layers"][0]["y"][0]
     assert y["format"] == {"type": "number", "decimals": 5, "suffix": " s"}
-    assert len(changes) == 1 and "Time Spent" in changes[0] and "under 1 ms" in changes[0]
+    assert len(changes) == 1 and "Time Spent" in changes[0] and "0 ms" in changes[0]
 
 
-def test_millisecond_and_larger_durations_keep_their_format():
+def test_a_rare_spike_above_1ms_does_not_keep_an_unreadable_axis():
+    # Grafana 763 "Average Time Spent by Command": the upload sampled one 1.14 ms
+    # spike, kept `duration`, and the usual ~0.2 ms values then read "0 ms".
+    payload = {"panels": [_duration_xy_panel("Average Time Spent", "v")]}
+
+    changes, _session = _fit(payload, _es_rows("v", [0.0002, 0.00018, 0.00025, 0.00114, 0.0]))
+
+    y = payload["panels"][0]["config"]["layers"][0]["y"][0]
+    assert y["format"] == {"type": "number", "decimals": 5, "suffix": " s"}
+    assert "peaks at 0.00114 s (typically 0.00025 s)" in changes[0]
+
+
+def test_axis_needs_several_milliseconds_of_range():
+    # A 0-6 ms axis ticks "0 ms, 1 ms, ... 6 ms" only by rounding; under 10 ms
+    # the number format keeps the values apart.
     payload = {"panels": [_duration_xy_panel("Latency", "v")]}
 
-    changes, _session = _fit(payload, _es_rows("v", [0.0002, 0.006]))
+    _fit(payload, _es_rows("v", [0.002, 0.006]))
+
+    assert payload["panels"][0]["config"]["layers"][0]["y"][0]["format"] == {
+        "type": "number", "decimals": 4, "suffix": " s",
+    }
+
+
+def test_durations_of_tens_of_milliseconds_keep_their_format():
+    payload = {"panels": [_duration_xy_panel("Latency", "v")]}
+
+    changes, _session = _fit(payload, _es_rows("v", [0.002, 0.03, 0.04]))
 
     assert payload["panels"][0]["config"]["layers"][0]["y"][0]["format"]["type"] == "duration"
     assert changes == []
@@ -3239,13 +3263,23 @@ def test_metric_tile_primary_duration_is_fitted():
     assert len(changes) == 1
 
 
-def test_readable_sub_millisecond_format_units():
-    fmt = api._readable_sub_millisecond_format
+def test_readable_duration_number_format_units():
+    fmt = api._readable_duration_number_format
     assert fmt({"from": "us"}, 120.0) == {"type": "number", "decimals": 1, "suffix": " µs"}
     assert fmt({"from": "s"}, 0.002) is None
     # 1e-5 min is 0.6 ms: sub-millisecond whatever the source unit.
     assert fmt({"from": "min"}, 0.00001) == {"type": "number", "decimals": 6, "suffix": " min"}
     assert fmt({"from": "unknown"}, 0.00001) is None
+
+
+def test_single_values_only_need_one_millisecond():
+    fmt = api._readable_duration_number_format
+    # A 3 ms tile reads "3 ms"; the same peak on an axis ticks in whole ms.
+    assert fmt({"from": "s"}, 0.003, 0.003) is None
+    assert fmt({"from": "s"}, 0.003, 0.003, on_axis=True) == {"type": "number", "decimals": 4, "suffix": " s"}
+    # A typical value under 1 ms makes an axis unreadable even with a large peak.
+    assert fmt({"from": "s"}, 0.5, 0.0002, on_axis=True) == {"type": "number", "decimals": 5, "suffix": " s"}
+    assert fmt({"from": "s"}, 0.5, 0.02, on_axis=True) is None
 
 
 def test_relative_time_window():

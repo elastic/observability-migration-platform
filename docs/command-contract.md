@@ -1381,14 +1381,16 @@ on disk is not modified:
   control's `?variable` as null, so native `PROMQL` panels bound to it fail with
   `Parameter [?var] cannot be null` on Kibana builds that do not substitute an
   "Any" value (seen on 9.7).
-- A `duration`-formatted series whose largest value in the panel's default time
-  window (panel override first, then the dashboard's) is under 1 ms switches to
-  a `number` format in its source unit with enough decimals (e.g. `0.00028 s`).
-  Kibana 9.6+ draws `duration` in whole output units and the API accepts no
-  `decimals` or sub-millisecond unit for it, so such a series read `0 ms` on
-  every axis tick (#480; upstream
+- A `duration`-formatted value that Kibana would label unreadably switches to a
+  `number` format in its source unit with enough decimals (e.g. `0.00028 s`),
+  judged on the panel's default time window (panel override first, then the
+  dashboard's). Kibana 9.6+ draws `duration` in whole output units and the API
+  accepts no `decimals` or sub-millisecond unit for it, so a 0.2 ms series read
+  `0 ms` on every axis tick (#480; upstream
   [elastic/kibana#301576](https://github.com/elastic/kibana/issues/301576)).
-  Series that reach 1 ms keep `duration`.
+  A chart series switches when its peak is under 10 ms or its median is under
+  1 ms, so one rare spike in the sample cannot keep an axis of "0 ms" ticks; a
+  gauge or metric tile switches only under 1 ms.
 
 Without `--es-url` the reviewed payload is sent byte-for-byte.
 
