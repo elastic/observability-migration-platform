@@ -124,6 +124,7 @@ from .runtime_features import (
     PROMQL_COMMAND_V0,
     PROMQL_HISTOGRAM_QUANTILE,
     PROMQL_LABEL_MATCHER_PARAMS,
+    PROMQL_NON_COUNTER_RANGE_FUNCTIONS,
     PROMQL_VECTOR_MATCHING,
     get_runtime_features,
     is_feature_supported,
@@ -1225,6 +1226,10 @@ def _detect_esql_named_param_binding(
 #: natively (elastic/elasticsearch#150578, shipped in 9.5).
 _HISTOGRAM_QUANTILE_MIN_ES = (9, 5)
 
+#: Minimum Elasticsearch (major, minor) whose native PROMQL evaluates
+#: rate/irate/increase over non-counter fields at every bucket step.
+_NON_COUNTER_RANGE_FUNCTIONS_MIN_ES = (9, 6)
+
 #: Minimum Kibana (major, minor) that forwards dashboard control values into
 #: named params inside an opaque ``PROMQL …`` expression
 #: (elastic/kibana#271244 / kibana#271215, labeled v9.5.0). Older Kibana
@@ -1487,6 +1492,29 @@ def _detect_target_runtime_features(
             else (
                 f"target Elasticsearch {es_version[0]}.{es_version[1]} predates 9.5; "
                 "histogram_quantile uses the ES|QL PERCENTILE() path"
+                if es_version is not None
+                else "target Elasticsearch version could not be determined"
+            )
+        ),
+    )
+
+    non_counter_range_supported = (
+        es_version is not None and es_version >= _NON_COUNTER_RANGE_FUNCTIONS_MIN_ES
+    )
+    set_runtime_feature(
+        profile,
+        PROMQL_NON_COUNTER_RANGE_FUNCTIONS,
+        supported=non_counter_range_supported,
+        source="probe",
+        confidence="verified" if es_version is not None else "inconclusive",
+        level="runtime",
+        reason=(
+            f"target Elasticsearch {es_version[0]}.{es_version[1]} evaluates native "
+            "rate/irate/increase over non-counter fields at every range"
+            if non_counter_range_supported
+            else (
+                f"target Elasticsearch {es_version[0]}.{es_version[1]} predates 9.6; native "
+                "rate/irate/increase over non-counter fields fails at wide ranges"
                 if es_version is not None
                 else "target Elasticsearch version could not be determined"
             )
