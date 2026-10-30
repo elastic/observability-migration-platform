@@ -590,16 +590,23 @@ def validate_esql(
         params = [
             {name: control_values.get(name, value) for name, value in param.items()} for param in params
         ]
+    end = datetime.now(UTC)
+    start = end - (time_window if time_window is not None else timedelta(hours=1))
     if time_window is not None:
         # Native PROMQL keeps ?_tstart/?_tend as date params (see
         # materialize_dashboard_time_query); bind them to the same window.
-        end = datetime.now(UTC)
-        bounds = {"_tstart": _iso_z(end - time_window), "_tend": _iso_z(end)}
+        bounds = {"_tstart": _iso_z(start), "_tend": _iso_z(end)}
         params = [{name: bounds.get(name, value) for name, value in param.items()} for param in params]
     if params:
         body["params"] = params
-    if dsl_filter:
-        body["filter"] = dsl_filter
+    # Kibana sends the dashboard time range as a request filter, and
+    # Elasticsearch drops indices with no documents in range before resolving
+    # mappings. Without it, an old index that maps a label differently (an
+    # object ``resource`` from an OTel index next to the Prometheus keyword)
+    # fails the query with "Cannot use field ... due to ambiguities" although
+    # the panel renders fine for a viewer.
+    time_filter = {"range": {"@timestamp": {"gte": _iso_z(start), "lte": _iso_z(end)}}}
+    body["filter"] = {"bool": {"filter": [time_filter, dsl_filter]}} if dsl_filter else time_filter
     response = client.post(
         f"{es_url}/_query",
         params={"format": "json"},
