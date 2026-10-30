@@ -95,7 +95,7 @@ from observability_migration.core.assets.native_dashboard import (
 from observability_migration.core.http import apply_tls
 from observability_migration.targets.kibana.compile import kibana_url_for_space
 from observability_migration.targets.kibana.emit.display import sanitize_axis_title_text
-from observability_migration.targets.kibana.emit.esql_utils import is_time_like_output_field
+from observability_migration.targets.kibana.emit.esql_utils import esql_identifier, is_time_like_output_field
 from observability_migration.targets.kibana.native_artifacts import (
     ARTIFACT_ENVELOPE_VERSION,
     NATIVE_ARTIFACT_KIND,
@@ -1186,7 +1186,83 @@ def _api_partition_styling(styling: Any, kind: str) -> dict[str, Any] | None:
 # Per-type config builders (esql presentation config -> API vis config)
 # --------------------------------------------------------------------------- #
 
+# Rows ES|QL returns when a query states no LIMIT, and the most it returns at all.
+_ESQL_DEFAULT_ROW_LIMIT = 1000
+_ESQL_MAX_ROW_LIMIT = 10000
+_TRAILING_LIMIT_RE = re.compile(r"\|\s*LIMIT\s+(\d+)\s*$", re.IGNORECASE)
+_FOLDED_SERIES_COLUMN = "_series"
+_FOLDED_VALUE_COLUMN = "_value"
+
+
+def _esql_string(text: str) -> str:
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _fold_multi_metric_breakdown(layer: dict[str, Any]) -> None:
+    """Give every metric x breakdown series its own colour.
+
+    Kibana colours a broken-down XY layer through a ``colorMapping`` keyed on
+    the breakdown *value*, and the API accepts no other colour shape there, so
+    every metric of one term shares a colour: Grafana 763 "Total Memory Usage"
+    drew ``used`` and ``max`` of ``redis:6379`` in the same teal. Folding the
+    metrics into one value column whose breakdown names the pair
+    (``"redis:6379 - used"``, the label Kibana showed before) makes each series
+    its own term. Only layers whose metrics share one format and axis are
+    folded, since the fold leaves a single y column.
+    """
+    ys = layer.get("y")
+    breakdown = layer.get("breakdown_by")
+    source = layer.get("data_source") or {}
+    query = str(source.get("query") or "").rstrip()
+    if not (isinstance(ys, list) and len(ys) > 1 and isinstance(breakdown, dict) and query):
+        return
+    if not all(isinstance(y, dict) and y.get("column") for y in ys):
+        return
+    shared = ({k: v for k, v in y.items() if k not in {"column", "label", "color"}} for y in ys)
+    first = next(shared)
+    if any(other != first for other in shared):
+        return
+    split = str(breakdown.get("column") or "")
+    columns = [str(y["column"]) for y in ys]
+    x_column = str((layer.get("x") or {}).get("column") or "")
+    if not split or not x_column or {_FOLDED_SERIES_COLUMN, _FOLDED_VALUE_COLUMN} & {split, x_column, *columns}:
+        return
+    labels = [str(y.get("label") or y["column"]) for y in ys]
+    branches = ", ".join(
+        f"{_FOLDED_SERIES_COLUMN} == {_esql_string(label)}, TO_DOUBLE({esql_identifier(column)})"
+        for label, column in zip(labels[:-1], columns[:-1], strict=True)
+    )
+    last = f"TO_DOUBLE({esql_identifier(columns[-1])})"
+    # Folding multiplies the rows, so raise the row cap by the same factor.
+    limit_match = _TRAILING_LIMIT_RE.search(query)
+    base_limit = int(limit_match.group(1)) if limit_match else _ESQL_DEFAULT_ROW_LIMIT
+    limit = min(_ESQL_MAX_ROW_LIMIT, base_limit * len(ys))
+    layer["data_source"] = {
+        **source,
+        "query": (
+            f"{query}\n"
+            f"| EVAL {_FOLDED_SERIES_COLUMN} = [{', '.join(_esql_string(label) for label in labels)}]\n"
+            f"| MV_EXPAND {_FOLDED_SERIES_COLUMN}\n"
+            f"| EVAL {_FOLDED_VALUE_COLUMN} = CASE({branches}, {last}), "
+            f"{_FOLDED_SERIES_COLUMN} = CONCAT(COALESCE(TO_STRING({esql_identifier(split)}), \"\"), "
+            f"\" - \", {_FOLDED_SERIES_COLUMN})\n"
+            f"| KEEP {esql_identifier(x_column)}, {_FOLDED_SERIES_COLUMN}, {_FOLDED_VALUE_COLUMN}\n"
+            f"| LIMIT {limit}"
+        ),
+    }
+    layer["y"] = [{**first, "column": _FOLDED_VALUE_COLUMN, "label": " / ".join(labels)}]
+    layer["breakdown_by"] = {**breakdown, "column": _FOLDED_SERIES_COLUMN}
+
+
 def _cfg_xy(title: str, cfg: dict[str, Any], query: str) -> dict[str, Any]:
+    out = _cfg_xy_layers(title, cfg, query)
+    for layer in out.get("layers") or []:
+        if isinstance(layer, dict):
+            _fold_multi_metric_breakdown(layer)
+    return out
+
+
+def _cfg_xy_layers(title: str, cfg: dict[str, Any], query: str) -> dict[str, Any]:
     metrics = cfg.get("metrics") if isinstance(cfg.get("metrics"), list) else []
     stacked_metrics = [m for m in metrics if not (isinstance(m, dict) and m.get("stack") is False)]
     overlay_metrics = [m for m in metrics if isinstance(m, dict) and m.get("stack") is False]
