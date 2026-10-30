@@ -2746,25 +2746,29 @@ _DURATION_UNIT_SECONDS = {
 }
 _DURATION_UNIT_SUFFIX = {"us": " µs"}
 _SUB_MILLISECOND_SECONDS = 1e-3
+# An axis labels its ticks in whole milliseconds, so it needs a peak of several
+# milliseconds before two ticks differ: a 0-1.2 ms axis reads "0 ms, 0 ms, 0 ms,
+# 1 ms". 10 ms leaves margin for a live sample that caught a rare spike.
+_AXIS_READABLE_DURATION_SECONDS = 1e-2
 
 
-def _duration_series(config: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
-    """``(query, column, format holder)`` for each duration-formatted value."""
-    series: list[tuple[str, str, dict[str, Any]]] = []
+def _duration_series(config: dict[str, Any]) -> list[tuple[str, str, dict[str, Any], bool]]:
+    """``(query, column, format holder, on_axis)`` for each duration-formatted value."""
+    series: list[tuple[str, str, dict[str, Any], bool]] = []
     for layer in config.get("layers") or []:
         if not isinstance(layer, dict):
             continue
         query = str((layer.get("data_source") or {}).get("query") or "")
         for y in layer.get("y") or []:
             if isinstance(y, dict) and (y.get("format") or {}).get("type") == "duration":
-                series.append((query, str(y.get("column") or ""), y))
+                series.append((query, str(y.get("column") or ""), y, True))
     # Single-value charts: gauges carry ``metric``; metric tiles a ``metrics``
     # list (``{"type": "primary", ...}``). Both read the panel-level query.
     query = str((config.get("data_source") or {}).get("query") or "")
     candidates = [config.get("metric"), *(config.get("metrics") or [])]
     for metric in candidates:
         if isinstance(metric, dict) and (metric.get("format") or {}).get("type") == "duration":
-            series.append((query, str(metric.get("column") or ""), metric))
+            series.append((query, str(metric.get("column") or ""), metric, False))
     return [item for item in series if item[0] and item[1]]
 
 
@@ -2782,24 +2786,40 @@ def _relative_time_window(time_range: Any) -> timedelta | None:
     return timedelta(**{_RELATIVE_UNIT[match.group(2)]: int(match.group(1))})
 
 
-def _readable_sub_millisecond_format(fmt: dict[str, Any], max_abs: float) -> dict[str, Any] | None:
-    """Number format for a duration whose largest live value is under 1 ms.
+def _readable_duration_number_format(
+    fmt: dict[str, Any], peak: float, typical: float | None = None, *, on_axis: bool = False,
+) -> dict[str, Any] | None:
+    """Number format for a duration Kibana would render unreadably small.
 
     Kibana 9.6+ renders ``duration`` with whole output units only, so a series
     of 0.2 ms values reads "0 ms" on every axis tick (#480; 9.5 printed "0.25
-    milliseconds"; upstream elastic/kibana#301576). The transform accepts neither ``decimals`` nor a unit below
-    ``ms`` for duration, so such a series keeps its source unit as a number
-    with enough decimals for two significant digits of its largest value.
+    milliseconds"; upstream elastic/kibana#301576). The transform accepts
+    neither ``decimals`` nor a unit below ``ms`` for duration, so such a series
+    keeps its source unit as a number with enough decimals for two significant
+    digits of its typical value.
+
+    A single value (gauge, metric tile) is unreadable only under 1 ms. An axis
+    is unreadable when its peak is under ``_AXIS_READABLE_DURATION_SECONDS`` or
+    its typical (median) value is under 1 ms: Grafana 763 "Average Time Spent
+    by Command" sampled one 1.1 ms spike at upload, kept ``duration``, and then
+    drew its usual 0.2 ms values as "0 ms" on every tick.
     """
     unit = str(fmt.get("from") or "s")
     factor = _DURATION_UNIT_SECONDS.get(unit)
-    if factor is None or not max_abs or max_abs * factor >= _SUB_MILLISECOND_SECONDS:
+    if factor is None or not peak:
         return None
-    decimals = min(9, max(0, math.ceil(-math.log10(max_abs))) + 1)
+    typical = typical or peak
+    if on_axis:
+        readable = peak * factor >= _AXIS_READABLE_DURATION_SECONDS and typical * factor >= _SUB_MILLISECOND_SECONDS
+    else:
+        readable = peak * factor >= _SUB_MILLISECOND_SECONDS
+    if readable:
+        return None
+    decimals = min(9, max(0, math.ceil(-math.log10(min(peak, typical)))) + 1)
     return {"type": "number", "decimals": decimals, "suffix": _DURATION_UNIT_SUFFIX.get(unit, f" {unit}")}
 
 
-def _column_max_abs(
+def _column_peak_and_typical(
     session: requests.Session,
     es_url: str,
     query: str,
@@ -2808,7 +2828,8 @@ def _column_max_abs(
     bound_values: dict[str, Any],
     control_configs: dict[str, dict[str, Any]],
     timeout: int,
-) -> float | None:
+) -> tuple[float, float] | None:
+    """Largest and median non-zero absolute value of *column*, or ``None``."""
     payload: dict[str, Any] = {"query": query.strip()}
     params = _control_query_params(query, bound_values, control_configs)
     if params:
@@ -2826,13 +2847,13 @@ def _column_max_abs(
     if column not in names:
         return None
     idx = names.index(column)
-    values = [
+    values = sorted(
         abs(row[idx])
         for row in body.get("values") or []
         if isinstance(row, list) and idx < len(row)
-        and isinstance(row[idx], int | float) and not isinstance(row[idx], bool)
-    ]
-    return max(values) if values else None
+        and isinstance(row[idx], int | float) and not isinstance(row[idx], bool) and row[idx]
+    )
+    return (values[-1], values[len(values) // 2]) if values else None
 
 
 def _fit_duration_formats_to_live_data(
@@ -2845,18 +2866,19 @@ def _fit_duration_formats_to_live_data(
     bound_values: dict[str, Any] | None = None,
     control_configs: dict[str, dict[str, Any]] | None = None,
 ) -> list[str]:
-    """Switch duration formats whose live values are all sub-millisecond.
+    """Switch duration formats whose live values would render unreadably.
 
     Runs each duration-formatted series' query once (with the hydrated control
-    values bound, as a viewer would see it) and rewrites only series whose
-    largest value is under 1 ms. Returns one description per change. Without
+    values bound, as a viewer would see it) and rewrites only series that
+    :func:`_readable_duration_number_format` finds too small for Kibana's
+    whole-unit duration labels. Returns one description per change. Without
     live data nothing changes: the reviewed format is the best static choice.
     """
     if not es_url:
         return []
     session = _session(es_api_key, verify=verify)
     dashboard_window = _relative_time_window(payload.get("time_range"))
-    cache: dict[tuple[str, str, timedelta | None], float | None] = {}
+    cache: dict[tuple[str, str, timedelta | None], tuple[float, float] | None] = {}
     changes: list[str] = []
     for _section, panel in iter_payload_leaf_panels(payload):
         config = panel.get("config") if isinstance(panel, dict) else None
@@ -2870,23 +2892,27 @@ def _fit_duration_formats_to_live_data(
             end = datetime.now(UTC)
             bound["_tstart"] = _iso_z(end - window)
             bound["_tend"] = _iso_z(end)
-        for query, column, holder in _duration_series(config):
+        for query, column, holder, on_axis in _duration_series(config):
             key = (query, column, window)
             if key not in cache:
-                cache[key] = _column_max_abs(
+                cache[key] = _column_peak_and_typical(
                     session, es_url, query, column,
                     bound_values=bound, control_configs=control_configs or {}, timeout=timeout,
                 )
-            max_abs = cache[key]
-            fitted = _readable_sub_millisecond_format(holder["format"], max_abs) if max_abs else None
+            sampled = cache[key]
+            if sampled is None:
+                continue
+            peak, typical = sampled
+            fitted = _readable_duration_number_format(holder["format"], peak, typical, on_axis=on_axis)
             if fitted is None:
                 continue
             holder["format"] = fitted
             title = str(config.get("title") or column)
+            unit = fitted["suffix"].strip()
             changes.append(
-                f"{title}: '{column}' peaks at {max_abs:.3g} {holder.get('format', {}).get('suffix', '').strip()} "
-                "(under 1 ms), so it uses a number format instead of duration, which Kibana "
-                "9.6+ would draw as \"0 ms\" on every tick"
+                f"{title}: '{column}' peaks at {peak:.3g} {unit} (typically {typical:.3g} {unit}), "
+                "so it uses a number format instead of duration, which Kibana 9.6+ labels in whole "
+                "milliseconds (\"0 ms\")"
             )
     return changes
 
