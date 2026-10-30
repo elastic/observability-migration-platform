@@ -209,8 +209,9 @@ PYTHONPATH=parity-rig .venv/bin/python -m verifier.scorecard \
 # dashboard --dashboard-id names before reading any panel list, so one
 # dashboard's DOM is never segmented by another dashboard's panel titles (that
 # join attributed a Docker error chunk to a Celery table and judged it against
-# logs-*). The dashboard is matched on its recorded id (native/index.json), its
-# uid/title, or an id that merely extends one of those; a single-dashboard
+# logs-*). The dashboard is matched on its recorded id (native/index.json, joined
+# through the artifact stem the report records, so same-titled dashboards stay
+# distinct), its uid/title, or an id that merely extends one of those; a single-dashboard
 # --migration-out always matches. A dashboard the report cannot identify is
 # reported as "per-panel attribution unavailable" on stderr AND in
 # render.reasons, with "panels": [] -- it never falls back to the run's full
