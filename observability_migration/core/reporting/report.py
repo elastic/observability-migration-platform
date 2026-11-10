@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -150,6 +151,11 @@ class PanelResult:
     # How the emitted label fields were chosen and whether the target confirmed
     # them: {"status": <worst field status or "none">, "fields": [...]}.
     target_binding: dict = field(default_factory=dict)
+    # Whether the Grafana unit survived into the emitted format:
+    # {"source_unit", "expected_format", "emitted_formats", "status"} with
+    # status none|kept|unmapped|unscaled|changed. Report-only (#483): it never
+    # feeds panel status, unlike target_binding's smoke rollups.
+    display_unit: dict = field(default_factory=dict)
 
 
 def _panel_query_index(yaml_panel):
@@ -570,6 +576,28 @@ def print_target_binding_summary(results):
     print("       the target, or pass the --field-profile that matches your ingest.")
 
 
+def print_display_unit_summary(results):
+    """Print whether Grafana units survived into the emitted formats (#483).
+
+    Report-only: a unit drawn differently (a scaled ``mbytes`` value shown as
+    plain bytes, a unit with no Kibana mapping) is a display gap worth seeing,
+    not a translation failure, so nothing here touches panel status.
+    """
+    records = [
+        pr.display_unit
+        for r in results
+        for pr in r.panel_results
+        if pr.grafana_type != "row" and pr.display_unit
+    ]
+    counts = Counter(str(record.get("status") or "none") for record in records)
+    if not any(counts[status] for status in ("kept", "unmapped", "unscaled", "changed")):
+        return
+    print(
+        f"Display units:       {counts['kept']} kept / {counts['unmapped']} unmapped / "
+        f"{counts['unscaled']} unscaled / {counts['changed']} changed"
+    )
+
+
 def print_report(results, field_discovery=None):
     total_rows = sum(_row_count(r) for r in results)
     # ``total_panels`` on the MigrationResult includes rows (it's the raw count
@@ -628,6 +656,7 @@ def print_report(results, field_discovery=None):
     if total_green or total_yellow or total_red:
         print(f"Verification gate:   {total_green} Green / {total_yellow} Yellow / {total_red} Red")
     print_target_binding_summary(results)
+    print_display_unit_summary(results)
     if upload_attempted:
         print(f"Upload results:      {uploaded_ok}/{upload_attempted} dashboards uploaded successfully")
     print()
@@ -800,6 +829,7 @@ def save_detailed_report(results, output_path, validation_summary=None, validati
                     "post_validation_action": pr.post_validation_action,
                     "post_validation_message": pr.post_validation_message,
                     "target_binding": pr.target_binding,
+                    "display_unit": pr.display_unit,
                 }
                 for pr in r.panel_results
             ],

@@ -552,12 +552,21 @@ obs-migrate compare ... && python -m observability_migration.core.verification.v
 # 4. Render audit (catches Lens accessor / invalid column)
 python -m observability_migration.targets.kibana.render_audit_driver ...
 
-# 5. Both translation modes
+# 5. Smoke against the real data (catches (null) series and unreadable axes)
+grafana-validate-uploaded ...   # zero null_series, zero unreadable_axis panels
+
+# 6. Display audit (what Kibana actually drew: ticks + legend names)
+python -m observability_migration.targets.kibana.render_audit_driver \
+  --chart-state --fail-on-display --fail-on-error ...
+
+# 7. Both translation modes
 obs-migrate --translation-mode native ...
 obs-migrate --translation-mode esql ...
 ```
 
 All PERFECT panels must have zero `render_error`. APPROXIMATE panels must have zero `render_error` (data gaps are `field_gap`/`data_gap`, which are warns not fails). NOT_FEASIBLE panels produce placeholder panels — acceptable.
+
+Display findings are part of the same bar: on PERFECT and APPROXIMATE panels the `--chart-state` audit must report zero `null_legend`, `unreadable_axis`, and `unit_mismatch`, and smoke must report zero `null_series` / `unreadable_axis`. The migrate summary's `Display units:` line must show no `unmapped` / `unscaled` / `changed` for the pack's panels unless the panel's `fidelity_manifest.yaml` notes explain the difference.
 
 ### Step 6 — Update fidelity_manifest and Commit
 
@@ -575,6 +584,9 @@ For the Redis 12776 pack specifically:
 | `live_validate` | native | Zero PROMQL parse rejections |
 | `dashboards_api` | both | Saved object validates against Kibana schema |
 | `render_audit` | both | Zero `render_error`; `field_gap` allowed only for documented NOT_FEASIBLE/APPROXIMATE panels |
+| `render_audit --chart-state --fail-on-display` | both | Zero `null_legend` / `unreadable_axis` / `unit_mismatch` on PERFECT and APPROXIMATE panels |
+| `grafana-validate-uploaded` (smoke) | both | Zero `null_series` and `unreadable_axis` panels |
+| migrate summary | both | No `unmapped` / `unscaled` / `changed` display unit unexplained by the fidelity manifest |
 | `corpus_gate` | esql | Semantic parity score ≥ baseline |
 | `interaction_audit` | esql | Control variable rewrites produce correct query rewrites |
 

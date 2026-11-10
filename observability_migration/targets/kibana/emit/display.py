@@ -141,6 +141,90 @@ def grafana_unit_to_yaml_format(unit: str) -> dict[str, Any] | None:
     return GRAFANA_UNIT_TO_YAML.get(unit)
 
 
+# Grafana units that name a *scaled* quantity. Kibana's bytes/bits formatters
+# rescale for display, but the value is not rescaled at emit time, so a Grafana
+# ``mbytes`` value of 512 is drawn as "512 B". Reported as ``unscaled`` by
+# display_unit_record; rescaling the value is a separate translator change.
+_SCALED_UNITS = frozenset({
+    "kbytes", "mbytes", "gbytes", "tbytes",
+    "KBs", "MBs", "GBs", "Kbits", "Mbits", "Gbits",
+})
+
+
+def _format_family(fmt: dict | None) -> str:
+    """The unit family a YAML format draws: percent, duration, bytes, bits,
+    ``number:<suffix>``, or the bare type. ``{"type": "percent"}`` and
+    ``{"type": "number", "suffix": "%"}`` are one family — metric tiles emit
+    the latter for Grafana ``percentunit`` (see enrich_yaml_panel_display)."""
+    if not isinstance(fmt, dict):
+        return ""
+    fmt_type = str(fmt.get("type") or "")
+    suffix = str(fmt.get("suffix") or "").strip()
+    if fmt_type == "percent" or suffix == "%":
+        return "percent"
+    if fmt_type in ("duration", "bytes", "bits"):
+        return fmt_type
+    if fmt_type == "number":
+        return f"number:{suffix}" if suffix else "number"
+    return fmt_type
+
+
+def _emitted_measure_formats(yaml_panel: dict) -> list[dict]:
+    """Distinct ``format`` dicts on the emitted panel's measures, in order."""
+    esql = yaml_panel.get("esql") if isinstance(yaml_panel, dict) else None
+    if not isinstance(esql, dict):
+        return []
+    entries: list[dict] = []
+    metrics = esql.get("metrics")
+    if isinstance(metrics, list):
+        entries.extend(entry for entry in metrics if isinstance(entry, dict))
+    for key in ("primary", "metric"):
+        entry = esql.get(key)
+        if isinstance(entry, dict):
+            entries.append(entry)
+    formats: list[dict] = []
+    for entry in entries:
+        fmt = entry.get("format")
+        if isinstance(fmt, dict) and fmt not in formats:
+            formats.append(dict(fmt))
+    return formats
+
+
+def display_unit_record(grafana_panel: dict, yaml_panel: dict) -> dict:
+    """Did *grafana_panel*'s unit survive into the emitted *yaml_panel*?
+
+    Returns ``{"source_unit", "expected_format", "emitted_formats", "status"}``
+    with status ``none`` (no unit to preserve), ``kept``, ``unmapped`` (the unit
+    has no Kibana format mapping), ``unscaled`` (a scaled byte/bit unit drawn
+    as unscaled bytes/bits), or ``changed`` (a different family was emitted,
+    e.g. by a curated override). Report-only: callers must not feed this into
+    panel status.
+    """
+    source_unit = extract_grafana_unit(grafana_panel or {})
+    expected = grafana_unit_to_yaml_format(source_unit) if source_unit else None
+    emitted = _emitted_measure_formats(yaml_panel or {})
+    if source_unit in ("", "none", "short"):
+        status = "none"
+    elif expected is None:
+        status = "unmapped"
+    elif source_unit in _SCALED_UNITS and any(
+        _format_family(fmt) in ("bytes", "bits") for fmt in emitted
+    ):
+        status = "unscaled"
+    elif not emitted:
+        status = "changed"
+    elif all(_format_family(fmt) == _format_family(expected) for fmt in emitted):
+        status = "kept"
+    else:
+        status = "changed"
+    return {
+        "source_unit": source_unit,
+        "expected_format": dict(expected) if expected else None,
+        "emitted_formats": emitted,
+        "status": status,
+    }
+
+
 def extract_legend_config(panel: dict) -> dict[str, Any] | None:
     """Derive ``legend`` dict for the YAML from Grafana's legend settings."""
     options = panel.get("options") or {}

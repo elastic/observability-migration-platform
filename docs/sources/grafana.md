@@ -931,6 +931,10 @@ such fields as `guessed` (offline, `--field-profile` omitted) or `missing`
 option-less controls with a proven fix. See
 [Target binding](../command-contract.md#target-binding).
 
+Whether each panel's Grafana unit survived into the emitted format is reported
+separately (the summary's `Display units:` line and `panels[].display_unit`);
+see [Display units](../command-contract.md#display-units).
+
 ### Customizing Field Mapping via Rule Packs
 
 Rule packs provide the Grafana-side equivalent of Datadog custom field

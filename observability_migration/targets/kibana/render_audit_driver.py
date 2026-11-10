@@ -44,11 +44,13 @@ from observability_migration.adapters.source.grafana.smoke import (
 from observability_migration.core.verification.field_capabilities import fetch_field_capabilities
 from observability_migration.targets.kibana.render_audit import (
     RenderVerdict,
+    audit_chart_state,
     audit_dashboard_elements,
     breakdown_fields_by_panel,
     classify_render,
     classify_render_per_panel,
     count_render_error_markers,
+    display_unit_by_panel,
     expected_kind_by_panel,
     expects_data_by_panel,
     interaction_regression,
@@ -68,6 +70,9 @@ DomFetcher = Callable[[str], str]
 # mixes them: a ``FROM logs-*`` panel's columns are not in ``metrics-*``, so a
 # single dashboard-wide lookup answers a question about the wrong index.
 FieldFetcher = Callable[[str], "set[str] | None"]
+# A chart-state fetcher takes a dashboard URL and returns the drawn charts:
+# [{"title": str, "charts": [Elastic Charts debug state, ...]}, ...].
+ChartStateFetcher = Callable[[str], list]
 
 
 # --------------------------------------------------------------------------- #
@@ -447,6 +452,112 @@ def dump_dom(
     return proc.stdout
 
 
+_CHART_STATE_JS = """
+() => [...document.querySelectorAll('[data-test-subj="dashboardPanel"]')].map((panel) => {
+  const titleEl = panel.querySelector('[data-test-subj="embeddablePanelTitle"]');
+  const charts = [...panel.querySelectorAll('.echChartStatus[data-ech-debug-state]')]
+    .map((el) => { try { return JSON.parse(el.getAttribute('data-ech-debug-state')); }
+                   catch (e) { return null; } })
+    .filter(Boolean);
+  return { title: titleEl ? titleEl.textContent.trim() : '', charts };
+}).filter((entry) => entry.title || entry.charts.length)
+"""
+
+# Waiting only for `.echChartStatus` elements ALREADY IN THE DOM to report
+# `data-ech-render-complete` lets a panel that has not started rendering at
+# all (no chart element to query yet) pass the wait instantly -- the capture
+# then races the panel and silently records it "no chart" (indistinguishable
+# from a legitimate table/markdown skip). Kibana's presentation panel sets
+# `data-render-complete="true"` on the panel wrapper itself once that panel
+# (of ANY kind -- chart, table, markdown, error) is done loading, verified in
+# the local Kibana checkout's `presentation_panel_internal.tsx`. The wait is
+# therefore keyed on EVERY `[data-test-subj="dashboardPanel"]` carrying that
+# marker (with at least one panel present, so an empty/not-yet-mounted
+# dashboard does not vacuously pass), composed with the pre-existing
+# chart-status condition -- which stays a no-op (trivially true) when a
+# dashboard has no Elastic-Charts panels at all.
+_RENDER_COMPLETE_JS = """
+() => {
+  const panels = [...document.querySelectorAll('[data-test-subj="dashboardPanel"]')];
+  const panelsReady = panels.length > 0
+    && panels.every((panel) => panel.querySelector('[data-render-complete="true"]'));
+  const statuses = [...document.querySelectorAll('.echChartStatus')];
+  const chartsReady = statuses.length === 0
+    || statuses.every((el) => el.getAttribute('data-ech-render-complete') === 'true');
+  return panelsReady && chartsReady;
+}
+"""
+
+
+def capture_chart_state(
+    url: str,
+    user_data_dir: str,
+    *,
+    no_sandbox: bool = False,
+    timeout_ms: int = 60_000,
+) -> list:
+    """Drawn axis ticks and legend names per panel, via Elastic Charts debug state.
+
+    Sets ``window._echDebugStateFlag`` before navigation (Lens XY/gauge/
+    partition/heatmap pass it as ``debugState``), waits for every chart to
+    report ``data-ech-render-complete``, then reads each ``dashboardPanel``'s
+    title and parsed ``data-ech-debug-state``. Requires the ``browser`` extra
+    (Playwright); imported lazily so the DOM-only audit never needs it.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:  # pragma: no cover - exercised only without the extra
+        raise RuntimeError(
+            "render audit --chart-state needs the browser extra: "
+            "pip install 'elastic-observability-migration[browser]' "
+            "and 'playwright install chromium'"
+        ) from exc
+    launch_args = ["--no-sandbox"] if no_sandbox else []
+    with sync_playwright() as playwright:
+        if user_data_dir:
+            context = playwright.chromium.launch_persistent_context(
+                user_data_dir, headless=True, args=launch_args,
+            )
+            browser = None
+        else:
+            browser = playwright.chromium.launch(headless=True, args=launch_args)
+            context = browser.new_context()
+        try:
+            page = context.pages[0] if context.pages else context.new_page()
+            page.add_init_script("window._echDebugStateFlag = true;")
+            page.goto(url, wait_until="domcontentloaded")
+            captured = []
+            try:
+                page.wait_for_function(_RENDER_COMPLETE_JS, timeout=timeout_ms)
+            except Exception:
+                # A chart that never finishes leaves partial state; what did
+                # draw is still checked below, and the render verdict above
+                # remains the authority on panels that failed to load. But a
+                # SILENT `pass` here used to swallow the timeout entirely --
+                # nothing in the `display` output distinguished "every panel
+                # really has no chart" from "the wait never completed, so
+                # whatever got captured is a partial, racy snapshot". Append
+                # one synthetic entry so the timeout is visible: an empty
+                # title can never match (and so can never misattribute to) a
+                # real report panel title, and `audit_chart_state` turns an
+                # explicit `skipped` reason into at least a `warn` (Fix 2c) --
+                # this is the least invasive option because it keeps the
+                # ChartStateFetcher contract a plain list, so no caller
+                # (the CLI's `captured = fetch_state(url)`, Task 4's driver
+                # tests) needs to change shape.
+                captured.append({
+                    "title": "", "charts": [],
+                    "skipped": "chart-state capture timed out waiting for "
+                               "panels to finish rendering",
+                })
+            captured.extend(page.evaluate(_CHART_STATE_JS))
+            return captured
+        finally:
+            context.close()
+            if browser is not None:
+                browser.close()
+
+
 def audit_dashboard_render(
     kibana_url: str,
     dashboard_id: str,
@@ -507,6 +618,7 @@ def run_audit_cli(
     dom_fetcher: DomFetcher | None = None,
     field_fetcher: FieldFetcher | None = None,
     tab_driver: TabDriver | None = None,
+    chart_state_fetcher: ChartStateFetcher | None = None,
 ) -> int:
     """Core of the render-audit CLI (separated from argparse for testing).
 
@@ -731,8 +843,51 @@ def run_audit_cli(
         )
         output["elements"] = elements.to_dict()
 
+    display = None
+    if getattr(args, "chart_state", False):
+        fetch_state = chart_state_fetcher or (
+            lambda u: capture_chart_state(
+                u,
+                getattr(args, "user_data_dir", "") or "",
+                no_sandbox=bool(getattr(args, "chrome_no_sandbox", False)),
+            )
+        )
+        # Copied so appending synthesized skip entries below never mutates the
+        # fetcher's own returned list object -- a fetcher (a test fixture, or a
+        # caller that memoizes/reuses a captured list across dashboards) must
+        # not see its list grow extra entries as a side effect of this CLI.
+        captured = list(fetch_state(url))
+        # Panels the capture did not see (hidden title, never rendered) are
+        # recorded as skipped by title, so a missing panel cannot pass silently.
+        if report is not None:
+            seen = {str(entry.get("title") or "") for entry in captured}
+            for title in panel_titles_in_order(report):
+                if title not in seen:
+                    captured.append({
+                        "title": title, "charts": [],
+                        "skipped": "panel title did not render in the chart-state capture",
+                    })
+        unit_by_title = display_unit_by_panel(report) if report is not None else {}
+        unit_available = bool(unit_by_title) or (
+            report is not None
+            and any(
+                isinstance(panel.get("display_unit"), dict)
+                for dashboard in report.get("dashboards", [])
+                for panel in dashboard.get("panels", [])
+            )
+        )
+        display = audit_chart_state(
+            captured,
+            source_unit_by_title=unit_by_title,
+            fail_on_display=bool(getattr(args, "fail_on_display", False)),
+            unit_source_available=unit_available,
+        )
+        output["display"] = display.to_dict()
+
     print(json.dumps(output, indent=2))
-    if verdict.status == "fail" and args.fail_on_error:
+    if args.fail_on_error and (
+        verdict.status == "fail" or (display is not None and display.status == "fail")
+    ):
         return 1
     return 0
 
@@ -755,6 +910,19 @@ def _build_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--elements", action="store_true",
         help="Also run the per-panel element audit (chart kind / legend / data).",
+    )
+    parser.add_argument(
+        "--chart-state", action="store_true",
+        help="Also read each chart's drawn axis ticks and legend names (Elastic "
+             "Charts debug state) and report display findings: (null) legends, "
+             "axes whose ticks all read the same, ticks missing the Grafana unit. "
+             "Needs the browser extra (Playwright). Findings warn by default.",
+    )
+    parser.add_argument(
+        "--fail-on-display", action="store_true",
+        help="With --chart-state, make any display finding a fail (exit non-zero "
+             "with --fail-on-error). For seeded curated-pack rigs, where a "
+             "(null) legend or unreadable axis is a pack failure, not data readiness.",
     )
     parser.add_argument(
         "--migration-out", default="",

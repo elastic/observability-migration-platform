@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 # Reuse the DOM error markers the smoke validator already trusts, so the live
 # render gate and the smoke audit never drift apart.
 from observability_migration.adapters.source.grafana.smoke import BROWSER_ERROR_PATTERNS
+from observability_migration.targets.kibana.emit.display import grafana_unit_to_yaml_format
 
 # In-panel render-error markers: the smoke validator's set plus the
 # Elasticsearch/ES|QL error surfaces a live Kibana panel shows inline (observed
@@ -1608,3 +1609,277 @@ def expects_data_by_panel(report: dict) -> set[str]:
             if query and kibana_type != "markdown":
                 titles.add(str(panel.get("title") or ""))
     return titles
+
+
+# --------------------------------------------------------------------------- #
+# Display findings: what the chart actually drew (issue #483)
+# --------------------------------------------------------------------------- #
+#
+# The DOM/a11y audit above can see legend text but not axis ticks — Elastic
+# Charts draws ticks on canvas. The debug state Kibana exposes when
+# ``window._echDebugStateFlag`` is set (``data-ech-debug-state`` on
+# ``.echChartStatus``) carries the rendered tick labels and legend item names,
+# which is what these checks read. Three findings, all observed on Grafana 763:
+# a ``(null)`` legend (#481), an axis whose every tick reads the same ("0 ms",
+# #480), and ticks that carry none of the Grafana unit.
+
+_DURATION_TICK_RE = re.compile(
+    r"(?:\bns\b|µs|μs|\bus\b|\bms\b|\bsec(?:ond)?s?\b|\bmin(?:ute)?s?\b"
+    r"|\bhours?\b|\bhrs?\b|\bdays?\b|(?<=\s)[shd]\b)",
+    re.IGNORECASE,
+)
+# The bare-unit alternative (``\bB\b`` / ``\bb\b``) requires a non-word
+# character on BOTH sides, but Kibana's real NumeralFormat renders compact
+# bytes/bits ticks with no space before the suffix ("0.00B", "0B", "1.00Kb"),
+# so the digit immediately left of the letter leaves no left boundary and the
+# bare alternative never matches. ``(?:\d\s*B\b|\bB\b)`` keeps the original
+# "isolated B" match (a space- or punctuation-delimited "B") while also
+# matching a digit directly (optionally through whitespace) followed by the
+# suffix, which is Kibana's actual no-space compact form. Plain numbers (no
+# letter at all) still never match either alternative.
+_BYTES_TICK_RE = re.compile(
+    r"(?:KiB|MiB|GiB|TiB|PiB|KB|MB|GB|TB|PB|kB|\d\s*B\b|\bB\b|\bbytes?\b)", re.IGNORECASE
+)
+# Kibana's bits NumeralFormat (``0,0.00bitd``) renders both the scaled-prefix
+# form ("1.00Kb", "20Mb/s") and the bare form ("0.00bit", "0.00b") with the
+# digit directly adjacent to the unit letter, no space -- the same no-space
+# compact pattern the bytes regex above was fixed for. A plain ``\bb\b``/
+# ``\bbits?\b`` word-boundary match never fires on that digit-adjacent form
+# (no boundary exists between a digit and a following word character), so
+# ``\d\s*[kmgtpe]?(?:bits?|b)\b`` matches the digit, an optional scale letter,
+# and "bit(s)"/bare "b" directly -- this is also what the family table
+# promises (``Kb``, ``Mb``, ``Gb``). The ``\b(?:[kmgtpe]?bits?|b)\b``
+# alternative keeps matching a standalone unit token with no adjacent digit
+# (an isolated "Kbit"/"bit"/"b"). Plain numbers with no unit letter at all
+# still never match either alternative.
+_BITS_TICK_RE = re.compile(
+    r"(?:\d\s*[kmgtpe]?(?:bits?|b)\b|\b(?:[kmgtpe]?bits?|b)\b)", re.IGNORECASE
+)
+
+
+def _legend_name_is_null(name: str) -> bool:
+    """Whether a rendered legend item name counts as a ``null_legend`` (#481).
+
+    Kibana's Lens XY/area legend does not always render a null breakdown value
+    as a fully-empty string or the literal substring ``"(null)"`` — on real
+    Kibana 9.6 it splices the (empty) breakdown value directly into the static
+    ``" - <metric>"`` suffix, giving a blank-but-non-empty compound label like
+    ``" - used"`` or ``"used - "``. So the check splits on ``" - "`` (spaces
+    required, not a bare ``"-"`` — a real value can itself contain a hyphen,
+    e.g. ``"redis-a:6379 - used"``, whose single segment must NOT trip this)
+    and flags the name when the whole name is empty/``(null)``, OR any
+    individual ``" - "``-separated segment is empty or ``(null)`` after
+    stripping.
+    """
+    text = str(name or "")
+    if not text.strip() or "(null)" in text:
+        return True
+    return any(not segment.strip() or "(null)" in segment for segment in text.split(" - "))
+
+
+@dataclass
+class DisplayFinding:
+    """One thing the drawn chart got wrong: ``kind`` + a human ``detail``."""
+
+    kind: str  # null_legend | unreadable_axis | unit_mismatch
+    detail: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        return {"kind": self.kind, "detail": self.detail}
+
+
+@dataclass
+class PanelDisplayResult:
+    title: str
+    findings: list[DisplayFinding] = field(default_factory=list)
+    skipped: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "title": self.title,
+            "findings": [finding.to_dict() for finding in self.findings],
+            "skipped": self.skipped,
+        }
+
+
+@dataclass
+class DisplayVerdict:
+    status: str = "pass"  # "pass" | "warn" | "fail"
+    panels: list[PanelDisplayResult] = field(default_factory=list)
+    reasons: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "panels": [panel.to_dict() for panel in self.panels],
+            "reasons": self.reasons,
+            "notes": self.notes,
+        }
+
+
+def _chart_y_axes(chart: dict) -> list[dict]:
+    axes = chart.get("axes") if isinstance(chart, dict) else None
+    y_axes = axes.get("y") if isinstance(axes, dict) else None
+    return [axis for axis in y_axes if isinstance(axis, dict)] if isinstance(y_axes, list) else []
+
+
+def _chart_legend_names(chart: dict) -> list[str]:
+    legend = chart.get("legend") if isinstance(chart, dict) else None
+    items = legend.get("items") if isinstance(legend, dict) else None
+    names: list[str] = []
+    for item in items if isinstance(items, list) else []:
+        if isinstance(item, dict):
+            names.append(str(item.get("name") or ""))
+        elif item is not None:
+            names.append(str(item))
+    return names
+
+
+def _tick_carries_unit(fmt: dict, labels: list[str]) -> bool | None:
+    """True/False when *fmt*'s family can be recognised in tick *labels*.
+
+    ``None`` means the family has no tick signature to check (plain numbers,
+    compact, booleans), so the unit check does not apply.
+    """
+    fmt_type = str(fmt.get("type") or "")
+    suffix = str(fmt.get("suffix") or "").strip()
+    if fmt_type == "percent" or suffix == "%":
+        return any("%" in label for label in labels)
+    if fmt_type == "duration":
+        return any(_DURATION_TICK_RE.search(label) for label in labels)
+    if fmt_type == "bytes":
+        return any(_BYTES_TICK_RE.search(label) for label in labels)
+    if fmt_type == "bits":
+        return any(_BITS_TICK_RE.search(label) for label in labels)
+    if suffix:
+        return any(suffix in label for label in labels)
+    return None
+
+
+def check_chart_state(title: str, charts: list[dict], *, source_unit: str = "") -> list[DisplayFinding]:
+    """Display findings for one panel's drawn charts (empty == drawn correctly).
+
+    ``charts`` are parsed Elastic Charts debug states. Findings:
+    ``null_legend`` (a legend name is ``(null)`` or empty), ``unreadable_axis``
+    (a y-axis with 2+ tick labels that are all identical), ``unit_mismatch``
+    (the Grafana ``source_unit`` has a recognisable family and no y-axis tick
+    carries it — any one axis carrying it passes, so dual-axis panels are not
+    flagged for their other axis). A chart with no y-axis (gauge, metric,
+    partition) only gets the legend check.
+    """
+    findings: list[DisplayFinding] = []
+    for chart in charts or []:
+        for name in _chart_legend_names(chart):
+            if _legend_name_is_null(name):
+                findings.append(DisplayFinding(
+                    "null_legend",
+                    f"legend entry {name.strip()!r} is empty or (null)",
+                ))
+        for axis in _chart_y_axes(chart):
+            labels = [str(label) for label in axis.get("labels") or []]
+            if len(labels) >= 2 and len(set(labels)) == 1:
+                findings.append(DisplayFinding(
+                    "unreadable_axis",
+                    f"{len(labels)} y-axis ticks all read {labels[0]!r}",
+                ))
+    expected = grafana_unit_to_yaml_format(source_unit) if source_unit else None
+    if expected:
+        all_labels = [
+            str(label)
+            for chart in charts or []
+            for axis in _chart_y_axes(chart)
+            for label in axis.get("labels") or []
+        ]
+        if all_labels:
+            carries = _tick_carries_unit(expected, all_labels)
+            if carries is False:
+                findings.append(DisplayFinding(
+                    "unit_mismatch",
+                    f"no y-axis tick carries the Grafana unit {source_unit!r} "
+                    f"(ticks start {all_labels[0]!r})",
+                ))
+    return findings
+
+
+def display_unit_by_panel(report: dict) -> dict[str, str]:
+    """``{panel title: Grafana source unit}`` from a migration report (#483).
+
+    Reads ``panels[].display_unit.source_unit`` (written since the migrate-time
+    unit record). Panels from older reports have no record and are absent, so
+    their unit check is skipped rather than guessed.
+    """
+    out: dict[str, str] = {}
+    for dashboard in (report or {}).get("dashboards", []):
+        for panel in dashboard.get("panels", []):
+            if not isinstance(panel, dict):
+                continue
+            record = panel.get("display_unit")
+            if isinstance(record, dict) and record.get("source_unit"):
+                out[str(panel.get("title") or "")] = str(record["source_unit"])
+    return out
+
+
+def audit_chart_state(
+    captured,
+    *,
+    source_unit_by_title: dict[str, str] | None = None,
+    fail_on_display: bool = False,
+    unit_source_available: bool = True,
+) -> DisplayVerdict:
+    """Aggregate per-panel display findings into one verdict.
+
+    ``captured`` is ``[{"title", "charts", "skipped"?}, ...]``. A panel with
+    no charts (table, markdown, hidden or unrendered title) is recorded as
+    skipped, never as passed. Findings are ``warn`` by default — on an
+    operator's target a ``(null)`` legend can be a label-binding gap, not a
+    translator bug — and ``fail`` only under ``fail_on_display`` (a seeded
+    curated-pack rig). ``unit_source_available=False`` records in ``notes``
+    that unit checks were skipped because the report predates ``display_unit``.
+
+    A ``skipped`` reason passed IN BY THE CALLER (the driver marks an
+    unrendered title, or a chart-state capture that timed out, this way) is a
+    readiness signal — nothing about that panel was actually checked — and
+    raises the verdict to at least ``warn``, mirroring how the render verdict
+    raises pass->warn for an unrendered title. A panel this function itself
+    skips only because it has no Elastic Charts element at all (``charts: []``
+    with no ``skipped`` string — a table or markdown panel) is a benign,
+    EXPECTED skip and must not by itself warn: it was checked, and "has no
+    chart" is the correct, final answer for it. The two skip reasons are
+    therefore tracked separately rather than being folded into one count.
+    """
+    source_unit_by_title = source_unit_by_title or {}
+    verdict = DisplayVerdict()
+    if not unit_source_available:
+        verdict.notes.append(
+            "unit checks skipped: the migration report has no display_unit "
+            "records (it predates #483); re-migrate to enable them"
+        )
+    has_explicit_skip = False
+    for entry in captured or []:
+        title = str(entry.get("title") or "")
+        charts = entry.get("charts") or []
+        skipped = str(entry.get("skipped") or "")
+        if skipped:
+            has_explicit_skip = True
+            verdict.panels.append(PanelDisplayResult(title=title, skipped=skipped))
+            continue
+        if not charts:
+            verdict.panels.append(PanelDisplayResult(
+                title=title,
+                skipped="no Elastic Charts chart state captured "
+                        "(table, markdown, or hidden title)",
+            ))
+            continue
+        findings = check_chart_state(
+            title, charts, source_unit=source_unit_by_title.get(title, "")
+        )
+        verdict.panels.append(PanelDisplayResult(title=title, findings=findings))
+        verdict.reasons.extend(
+            f"{title}: {finding.kind} — {finding.detail}" for finding in findings
+        )
+    if verdict.reasons:
+        verdict.status = "fail" if fail_on_display else "warn"
+    elif has_explicit_skip:
+        verdict.status = "warn"
+    return verdict
