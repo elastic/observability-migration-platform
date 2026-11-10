@@ -42,6 +42,18 @@ labels. Binding never changes a panel's status; post-upload smoke evidence
 (`null_series`, `control_unbound`, `control_null_param` runtime rollups) is what
 moves the verification gate. See [Target binding](../command-contract.md#target-binding).
 
+### Display Unit (orthogonal to status)
+
+`PanelResult.display_unit` records whether the panel's Grafana unit survived
+into the emitted format: `{"source_unit", "expected_format", "emitted_formats",
+"status"}` with status `none` | `kept` | `unmapped` | `unscaled` | `changed`.
+Computed in `targets/kibana/emit/display.py::display_unit_record` from the
+source panel and the final emitted panel. Report-only: it never changes panel
+status (unlike target binding, whose smoke rollups move the gate). It is
+serialized as `panels[].display_unit` in `migration_report.json`, summarized by
+the migrate summary's `Display units:` line, and read back by the render
+audit's `--chart-state` unit check.
+
 ## DashboardIR
 
 The top-level container: `title`, `description`, `filters`, `settings`,

@@ -537,3 +537,240 @@ def test_unbound_parameter_is_not_downgraded_to_a_data_gap():
         available_fields=set(), available_metrics=set(),
     )
     assert result.status == "error", result.status
+
+
+def _display_args(tmp_path, *, fail_on_display=False, fail_on_error=True):
+    import argparse
+    import json as _json
+
+    report = {"dashboards": [{"title": "Redis", "panels": [
+        {"title": "Average Time Spent by Command / sec", "kibana_type": "line",
+         "display_unit": {"source_unit": "s", "status": "kept"},
+         "yaml_panel": {"esql": {"type": "line", "query": "FROM metrics-* | STATS v = AVG(x)"}}},
+    ]}]}
+    (tmp_path / "migration_report.json").write_text(_json.dumps(report))
+    return argparse.Namespace(
+        kibana_url="https://kb", dashboard_id="Redis", space="", user_data_dir="",
+        time_from="now-1h", time_to="now", fail_on_error=fail_on_error, elements=False,
+        migration_out=str(tmp_path), es_url="", es_api_key="", es_index="metrics-*",
+        insecure=False, agent_browser=False, chrome_no_sandbox=False,
+        chart_state=True, fail_on_display=fail_on_display,
+    )
+
+
+_ZERO_MS = [{"title": "Average Time Spent by Command / sec", "charts": [
+    {"axes": {"y": [{"labels": ["0 ms"] * 5, "title": "Seconds"}]},
+     "legend": {"items": [{"name": "get"}]}},
+]}]
+_FITTED = [{"title": "Average Time Spent by Command / sec", "charts": [
+    {"axes": {"y": [{"labels": ["0.00030 s", "0.00020 s", "0.00010 s"], "title": "Seconds"}]},
+     "legend": {"items": [{"name": "get"}]}},
+]}]
+
+
+def _run_display_cli(args, captured, capsys):
+    import json as _json
+
+    from observability_migration.targets.kibana.render_audit_driver import run_audit_cli
+
+    rc = run_audit_cli(
+        args,
+        # The DOM must name the panel, or the render audit (correctly) reports
+        # an unmatched title and the render verdict is warn, not pass.
+        dom_fetcher=lambda _u: "Average Time Spent by Command / sec line chart rendered",
+        chart_state_fetcher=lambda _u: captured,
+    )
+    return rc, _json.loads(capsys.readouterr().out)
+
+
+def test_cli_chart_state_warns_without_fail_flags(tmp_path, capsys):
+    rc, output = _run_display_cli(_display_args(tmp_path), _ZERO_MS, capsys)
+    assert rc == 0
+    assert output["display"]["status"] == "warn"
+    assert output["display"]["panels"][0]["findings"][0]["kind"] == "unreadable_axis"
+    assert output["render"]["status"] == "pass"  # render verdict untouched
+
+
+def test_cli_chart_state_fail_on_display_exits_1(tmp_path, capsys):
+    rc, output = _run_display_cli(
+        _display_args(tmp_path, fail_on_display=True), _ZERO_MS, capsys
+    )
+    assert rc == 1
+    assert output["display"]["status"] == "fail"
+
+
+def test_cli_chart_state_clean_capture_passes(tmp_path, capsys):
+    rc, output = _run_display_cli(_display_args(tmp_path), _FITTED, capsys)
+    assert rc == 0
+    assert output["display"]["status"] == "pass"
+
+
+def test_cli_without_chart_state_has_no_display_key(tmp_path, capsys):
+    args = _display_args(tmp_path)
+    args.chart_state = False
+    rc, output = _run_display_cli(args, _ZERO_MS, capsys)
+    assert rc == 0
+    assert "display" not in output
+
+
+# --------------------------------------------------------------------------- #
+# Final-review Fix 2: the display check can pass without checking anything
+# --------------------------------------------------------------------------- #
+
+
+def test_render_complete_js_requires_every_panel_marked_complete():
+    """(a) Waiting only for charts already in the DOM lets a panel that hasn't
+    rendered AT ALL (no .echChartStatus element yet) pass the wait instantly --
+    the capture then races the panel and silently records it as "no chart"
+    skipped. Kibana's presentation panel sets data-render-complete="true" when
+    a panel (of ANY kind, not just charts) is done loading
+    (presentation_panel_internal.tsx), so the wait must require every
+    dashboardPanel to carry that marker, with at least one panel present."""
+    from observability_migration.targets.kibana.render_audit_driver import (
+        _RENDER_COMPLETE_JS,
+    )
+
+    assert 'data-test-subj="dashboardPanel"' in _RENDER_COMPLETE_JS
+    assert 'data-render-complete="true"' in _RENDER_COMPLETE_JS
+    # Still composes with the chart-status completeness condition.
+    assert "echChartStatus" in _RENDER_COMPLETE_JS
+    assert "data-ech-render-complete" in _RENDER_COMPLETE_JS
+
+
+class _FakeTimeoutPage:
+    def add_init_script(self, script):
+        pass
+
+    def goto(self, url, wait_until=None):
+        pass
+
+    def wait_for_function(self, js, timeout=None):
+        raise TimeoutError("render-complete wait timed out")
+
+    def evaluate(self, js):
+        return [{"title": "Already drawn", "charts": []}]
+
+
+class _FakeTimeoutContext:
+    def __init__(self):
+        self.pages = []
+
+    def new_page(self):
+        return _FakeTimeoutPage()
+
+    def close(self):
+        pass
+
+
+class _FakeBrowser:
+    def new_context(self):
+        return _FakeTimeoutContext()
+
+    def close(self):
+        pass
+
+
+class _FakeChromium:
+    def launch_persistent_context(self, user_data_dir, headless, args):
+        return _FakeTimeoutContext()
+
+    def launch(self, headless, args):
+        return _FakeBrowser()
+
+
+class _FakePlaywright:
+    chromium = _FakeChromium()
+
+
+class _FakeSyncPlaywrightCM:
+    def __enter__(self):
+        return _FakePlaywright()
+
+    def __exit__(self, *exc_info):
+        return False
+
+
+def test_capture_chart_state_records_timeout_as_a_synthetic_skip_entry(monkeypatch):
+    """(b) A page.wait_for_function timeout used to be swallowed by a bare
+    `except Exception: pass`, so a dashboard that never finished rendering
+    silently returned whatever partial chart state happened to exist --
+    nothing told the operator the wait never completed. The least invasive
+    fix that keeps the ChartStateFetcher contract a plain list (so Task 4's
+    driver tests and the CLI's `captured = fetch_state(url)` call site need no
+    shape change) is to append ONE synthetic entry with an empty title (never
+    matches a real report title, so it cannot misattribute a skip to a real
+    panel) and an explicit `skipped` reason -- which audit_chart_state (Fix 2c)
+    now turns into a warn, making the timeout visible in the `display` output
+    instead of silently disappearing."""
+    monkeypatch.setattr(
+        "playwright.sync_api.sync_playwright", lambda: _FakeSyncPlaywrightCM()
+    )
+    from observability_migration.targets.kibana.render_audit_driver import (
+        capture_chart_state,
+    )
+
+    result = capture_chart_state("https://kb/app/dashboards", "", timeout_ms=10)
+
+    assert {"title": "Already drawn", "charts": []} in result
+    synthetic = [e for e in result if e.get("skipped")]
+    assert len(synthetic) == 1
+    assert synthetic[0]["title"] == ""
+    assert synthetic[0]["charts"] == []
+    assert "timed out" in synthetic[0]["skipped"]
+
+
+def test_cli_chart_state_synthesizes_skip_for_missing_panel_title(tmp_path, capsys):
+    """Gap-closing test: a report panel the capture never saw (hidden title,
+    never rendered) must surface as an explicit skipped entry -- and per Fix
+    2c that now raises the display verdict to warn, not pass."""
+    args = _display_args(tmp_path)
+    captured = [{"title": "Some other panel", "charts": []}]
+
+    rc, output = _run_display_cli(args, captured, capsys)
+
+    assert rc == 0
+    panels_by_title = {p["title"]: p for p in output["display"]["panels"]}
+    assert panels_by_title["Average Time Spent by Command / sec"]["skipped"] == (
+        "panel title did not render in the chart-state capture"
+    )
+    assert output["display"]["status"] == "warn"
+
+
+def test_cli_chart_state_does_not_mutate_the_fetched_list_across_calls(tmp_path, capsys):
+    """(d) Fold-in minor: appending synthesized skip entries onto the fetcher's
+    own list object pollutes it for any caller/test that reuses that list
+    object across invocations (e.g. a module-level fixture list). The CLI must
+    copy before appending."""
+    args = _display_args(tmp_path)
+    shared_captured = [{"title": "Some other panel", "charts": []}]
+
+    _run_display_cli(args, shared_captured, capsys)
+
+    assert shared_captured == [{"title": "Some other panel", "charts": []}]
+
+
+def test_cli_chart_state_notes_when_report_predates_display_unit(tmp_path, capsys):
+    """CLI-level counterpart of the function-level
+    test_audit_notes_when_report_predates_display_unit: an old migration
+    report with no display_unit records at all must still surface the
+    unit-check skip in display.notes end-to-end through run_audit_cli."""
+    import argparse
+    import json as _json
+
+    report = {"dashboards": [{"title": "Redis", "panels": [
+        {"title": "Average Time Spent by Command / sec", "kibana_type": "line",
+         "yaml_panel": {"esql": {"type": "line", "query": "FROM metrics-* | STATS v = AVG(x)"}}},
+    ]}]}
+    (tmp_path / "migration_report.json").write_text(_json.dumps(report))
+    args = argparse.Namespace(
+        kibana_url="https://kb", dashboard_id="Redis", space="", user_data_dir="",
+        time_from="now-1h", time_to="now", fail_on_error=True, elements=False,
+        migration_out=str(tmp_path), es_url="", es_api_key="", es_index="metrics-*",
+        insecure=False, agent_browser=False, chrome_no_sandbox=False,
+        chart_state=True, fail_on_display=False,
+    )
+
+    rc, output = _run_display_cli(args, _FITTED, capsys)
+
+    assert rc == 0
+    assert any("display_unit" in note for note in output["display"]["notes"])

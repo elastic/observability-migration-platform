@@ -427,6 +427,21 @@ audit below.
   needs `--es-url` too; without field caps it reports `render_error`. Do not read
   an `--elements` `render_error` on an unseeded cluster as a translator bug
   without checking whether field caps were supplied.
+- **`--chart-state` reads what was drawn, not what was queried.** With
+  `window._echDebugStateFlag` set, Elastic Charts publishes its rendered tick
+  labels and legend item names (`data-ech-debug-state`); the audit flags
+  `null_legend` (a legend entry that is `(null)`, empty, or has a blank segment,
+  e.g. `" - used"`), `unreadable_axis`
+  (2+ y-axis ticks that all read the same, e.g. "0 ms" on Kibana 9.6+), and
+  `unit_mismatch` (no y-axis tick carries the panel's Grafana unit, from the
+  report's `display_unit`). These are the drawn counterparts of smoke's
+  data-inferred `null_series` / `unreadable_axis`. Findings warn by default;
+  `--fail-on-display` (with `--fail-on-error`) makes them fail, which is the
+  curated-pack gate on a seeded rig. Needs the `browser` extra. The capture
+  waits for every `dashboardPanel` to carry Kibana's `data-render-complete`
+  marker (not just charts already in the DOM) and, if that wait still times
+  out, records an explicit skip that the audit raises to at least `warn`
+  instead of silently reporting a partial capture as clean.
 - **Regression ratchet:** `render_snapshot` + `diff_render_snapshots` — the live
   per-panel outcomes must not regress vs a committed baseline.
 - **Default-state control coverage:** the local render-audit script uploads

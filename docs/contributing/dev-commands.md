@@ -57,7 +57,7 @@ question, and no single gate is sufficient for "the dashboard is correct".
 | `verifier.corpus_gate` | `obs-migrate compare` report(s) | Frozen semantic corpus does not regress | configured budgets |
 | `verifier.benchmark_gate` | PM `benchmark_history.json` | Migration success metrics do not drop vs compatible baseline | configured budgets |
 | `verifier.scorecard` | `migration_report.json` + committed baseline | Layer-9 invariant ERROR counts do not regress vs baseline (fidelity ratchet) | no error-count increase |
-| `render_audit_driver` | uploaded dashboard + headless browser (+ `--es-url` field caps) | Each panel actually renders in real Kibana (no Lens "invalid column"/error embeddable). A panel whose error names only columns field caps confirm absent is `field_gap` (warn) — unless the panel's own query defines that column, which makes it a `render_error`; an empty panel whose metric column is confirmed absent is `data_gap` (warn). Field caps come from the index each panel's own ES\|QL `FROM` names, so a `FROM logs-*` panel is never judged against `metrics-*`. Per-panel metadata comes from the audited dashboard only, never the whole run. Without field caps absence is unconfirmable: an error stays `render_error` and an empty panel stays `unexpected_empty` | no `render_error` |
+| `render_audit_driver` | uploaded dashboard + headless browser (+ `--es-url` field caps) | Each panel actually renders in real Kibana (no Lens "invalid column"/error embeddable). A panel whose error names only columns field caps confirm absent is `field_gap` (warn) — unless the panel's own query defines that column, which makes it a `render_error`; an empty panel whose metric column is confirmed absent is `data_gap` (warn). Field caps come from the index each panel's own ES\|QL `FROM` names, so a `FROM logs-*` panel is never judged against `metrics-*`. Per-panel metadata comes from the audited dashboard only, never the whole run. Without field caps absence is unconfirmable: an error stays `render_error` and an empty panel stays `unexpected_empty`. With `--chart-state` (browser extra) it also reports display findings — `(null)` legends, axes whose ticks all read the same, ticks missing the Grafana unit — as warns, or fails under `--fail-on-display` | no `render_error` |
 | `scripts/run_interaction_audit_local.sh` | uploaded dashboard + Playwright + scenario manifest | Adapter-specific control state plus affected/unaffected panel request evidence | no unexpected `fail` |
 | `verifier.mutations` | `migration_report.json` | The invariant verifier catches deliberate corruptions | all mutations pass |
 | `scripts/run_cross_profile_corpus.py --source {grafana,datadog}` | source dashboard JSON | Emitted field spellings match the requested profile, per source. Exits 2 (fail-closed) when a listed profile has no leakage rules, so a profile cannot pass vacuously | no leakage; no unchecked profile |
@@ -229,6 +229,11 @@ PYTHONPATH=parity-rig .venv/bin/python -m verifier.scorecard \
   --migration-out migration_output/dashboards \
   --es-url "$ELASTICSEARCH_ENDPOINT" --es-index "metrics-*" \
   --time-from now-24h --time-to now --elements
+
+# Display audit: drawn ticks + legend names vs the Grafana units in the report.
+.venv/bin/python -m observability_migration.targets.kibana.render_audit_driver \
+  --kibana-url "$KIBANA_URL" --dashboard-id "<id>" --migration-out <dir>/dashboards \
+  --chart-state --fail-on-display --fail-on-error
 
 # Focusing the right tab in a live agent-browser session (--agent-browser):
 # bootstrap.sh logs in once and keeps a persistent profile

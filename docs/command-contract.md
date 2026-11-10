@@ -398,6 +398,30 @@ filtered by a control with no options) turn the verification gate Yellow, and
 Red. Smoke matches panels by title, which it now reads from the Dashboards API
 embeddable config, so these merge into API-uploaded dashboards.
 
+### Display units
+
+Migration also records whether each panel's Grafana unit survived into the
+emitted Kibana format. The summary prints, under `Verification gate`:
+
+```text
+Display units:       11 kept / 1 unmapped / 0 unscaled / 1 changed
+```
+
+- `kept` — the emitted format draws the Grafana unit (percent and number+`%`
+  count as one family).
+- `unmapped` — the Grafana unit has no Kibana format mapping; the panel shows
+  plain numbers.
+- `unscaled` — a scaled Grafana unit (`mbytes`, `Mbits`, …) drawn as unscaled
+  bytes/bits with the value left in the Grafana unit, so 512 MB reads "512 B".
+- `changed` — a different format family was emitted (for example a curated
+  override that draws a count where Grafana said bytes).
+
+`migration_report.json` records this per panel as `panels[].display_unit`, and
+any panel not `kept` carries a `Display unit:` note. This is report-only: it
+does not change a panel's Green/Yellow/Red status. What Kibana actually drew —
+axis ticks and legend names — is checked after upload by the render audit's
+`--chart-state` display findings.
+
 Examples below use the canonical environment names
 (`$ELASTICSEARCH_ENDPOINT`, `$KIBANA_ENDPOINT`, `$KEY`) that match
 `serverless_creds.env`. The compatibility aliases `$ES_URL`, `$KIBANA_URL`, and

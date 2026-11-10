@@ -426,5 +426,49 @@ class CompileReportingRemovedTests(unittest.TestCase):
         self.assertEqual(list(build_runtime_summary(result)), ["upload"])
 
 
+class DisplayUnitSummaryTests(unittest.TestCase):
+    def test_summary_line_counts_statuses_and_skips_rows(self):
+        result = MigrationResult(dashboard_title="Redis", dashboard_uid="redis")
+        kept = _panel("Uptime", "migrated")
+        kept.display_unit = {"source_unit": "s", "status": "kept"}
+        unscaled = _panel("Memory", "migrated")
+        unscaled.display_unit = {"source_unit": "mbytes", "status": "unscaled"}
+        row = _row("Section")
+        row.display_unit = {"source_unit": "bytes", "status": "changed"}
+        result.panel_results = [kept, unscaled, row]
+        result.total_panels = 3
+        result.migrated = 2
+        result.skipped = 1
+
+        output = _capture_report(result)
+        self.assertIn("Display units:       1 kept / 0 unmapped / 1 unscaled / 0 changed", output)
+
+    def test_no_display_unit_line_when_no_panel_has_a_unit(self):
+        result = _argocd_fixture()
+        self.assertNotIn("Display units:", _capture_report(result))
+
+    def test_save_detailed_report_serializes_display_unit(self):
+        # Gap-closing test (#483 final review): display_unit is set at
+        # migrate time (observability_migration/adapters/source/grafana/panels.py)
+        # and read back by the render audit from migration_report.json
+        # (display_unit_by_panel) -- nothing pinned that save_detailed_report
+        # actually writes it into the panel dict.
+        result = _argocd_fixture()
+        record = {"source_unit": "s", "expected_format": {"type": "duration"},
+                  "emitted_formats": [{"type": "duration"}], "status": "kept"}
+        result.panel_results[0].display_unit = record
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "migration_report.json"
+            save_detailed_report([result], output_path)
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+
+        panels = payload["dashboards"][0]["panels"]
+        self.assertEqual(panels[0]["title"], "panel-0")
+        self.assertEqual(panels[0]["display_unit"], record)
+        # A panel with no unit record serializes the default empty dict, not
+        # a missing key -- display_unit_by_panel relies on the key existing.
+        self.assertEqual(panels[1]["display_unit"], {})
+
+
 if __name__ == "__main__":
     unittest.main()

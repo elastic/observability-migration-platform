@@ -28,6 +28,7 @@ from observability_migration.core.verification.field_capabilities import assess_
 from observability_migration.targets.kibana.dashboards_api import native_dashboard_from_ir
 from observability_migration.targets.kibana.emit.display import (
     clean_template_variables,
+    display_unit_record,
     enrich_yaml_panel_display,
     grafana_unit_to_yaml_format,
 )
@@ -4219,6 +4220,33 @@ def _enrich_panel_result(
     panel_result.readiness = classify_panel_readiness(panel_result)
     panel_result.recommended_target = recommend_panel_target(panel_result)
     _sync_visual_ir(panel_result, yaml_panel)
+    # Display-unit record (#483): computed here, the one place that sees both
+    # the source panel and the final emitted panel (after curated overrides),
+    # and appended after the status-promotion block above so the note stays
+    # report-only. The wording avoids the semantic-loss tokens in
+    # verification.py for the same reason.
+    if yaml_panel and isinstance(yaml_panel.get("esql"), dict):
+        record = display_unit_record(panel, yaml_panel)
+        panel_result.display_unit = record
+        status = record["status"]
+        if status == "unmapped":
+            _append_unique(
+                panel_result.notes,
+                f'Display unit: Grafana unit "{record["source_unit"]}" has no Kibana '
+                "format mapping, so the panel shows plain numbers.",
+            )
+        elif status == "unscaled":
+            _append_unique(
+                panel_result.notes,
+                f'Display unit: Grafana unit "{record["source_unit"]}" is drawn as '
+                "unscaled bytes/bits, with the value left in the Grafana unit.",
+            )
+        elif status == "changed":
+            _append_unique(
+                panel_result.notes,
+                f'Display unit: Grafana unit "{record["source_unit"]}" is drawn with '
+                "a different format family than the unit mapping gives.",
+            )
     return panel_result
 
 
