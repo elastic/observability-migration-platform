@@ -63,6 +63,46 @@ For your own assets, use the same `migrate` command with exported JSON
 index flags (`--data-view` / `--esql-index`), and the full flag reference:
 [`docs/command-contract.md`](docs/command-contract.md).
 
+## Run your first migration
+
+Once `obs-migrate doctor` reports a healthy environment, you can migrate a
+dashboard with no Elastic or Kibana credentials. The repo ships sample
+dashboards for exactly this, so list them first (offline, no setup):
+
+```bash
+uvx --from "$PKG" obs-migrate list-samples
+```
+
+Copy the `input_dir` value for the Grafana sample, then migrate it into a
+local output directory:
+
+```bash
+uvx --from "$PKG" obs-migrate migrate \
+  --source grafana --input-mode files \
+  --input-dir "<input_dir from list-samples>" \
+  --output-dir sample_out --assets dashboards --compile
+```
+
+This translates the dashboard into Kibana-ready YAML and compiles it to
+NDJSON. Anything that can't be expressed natively, such as the sample's
+World Map panel, is kept as a manual-review marker rather than silently
+dropped.
+
+Key output lands under `sample_out/dashboards/`:
+
+- `yaml/`: the generated dashboard YAML
+- `compiled/`: the compiled Kibana NDJSON (requires `--compile`)
+- `migration_summary.md`: a human-readable verdict, scorecard, and
+  per-dashboard worklist; read this first
+
+To go further:
+
+- [`docs/command-contract.md`](docs/command-contract.md): the full command
+  reference (env-file setup, live API extraction, alerts, and upload). Reach
+  for it as the reference once the example above works, not as the starting
+  point.
+
+## Compatibility
 Always reuse the same launcher as `doctor` (`uvx --from "$PKG" …`). `PKG` only
 lives in the shell you set it in, so re-export it in a new terminal.
 
