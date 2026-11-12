@@ -272,6 +272,8 @@ def _semantic_gate(
         return "Yellow"
     if any(item in RUNTIME_WARNING_ROLLUPS for item in runtime_rollups):
         return "Yellow"
+    if (getattr(panel_result, "target_binding", None) or {}).get("status") in {"guessed", "missing"}:
+        return "Yellow"
     if status == "migrated_with_warnings" or semantic_losses:
         return "Yellow"
     return "Green"
@@ -330,6 +332,7 @@ def build_verification_packet(
         "source_query": getattr(panel_result, "promql_expr", ""),
         "translated_query": getattr(panel_result, "esql_query", ""),
         "field_mappings_used": _field_mapping_summary(panel_result),
+        "target_binding": getattr(panel_result, "target_binding", None) or {},
         "candidate_targets": candidates,
         "recommended_target": candidates[0]["target"] if candidates else "",
         "known_semantic_losses": semantic_losses,

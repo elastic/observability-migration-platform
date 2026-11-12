@@ -101,6 +101,16 @@ Redis+DogStatsD fixture × `otel`, `elastic_agent`, `prometheus_native`,
 Examples:
 
 ```bash
+# Redis composite-series binding regression: emitted query through smoke.
+.venv/bin/python -m pytest tests/test_redis_composite_binding.py tests/test_target_binding.py tests/test_smoke_binding_gaps.py -q
+
+# Contributor verification: symbolic contracts, 288 readiness combinations,
+# 200 generated queries, and three removed-guard mutations.
+.venv/bin/python scripts/verification/verify_label_bindings.py
+
+# Include five read-only runtime counterexamples; no indices are created.
+ES_URL=http://localhost:9200 .venv/bin/python scripts/verification/verify_label_bindings.py
+
 # Runtime ES|QL oracle: catches invalid emitted ES|QL that static checks miss.
 PYTHONPATH=parity-rig .venv/bin/python -m verifier.live_validate \
   --migration-out migration_output/dashboards \

@@ -204,8 +204,8 @@ def parse_args():
         "--fail-on-binding-gaps",
         action="store_true",
         help=(
-            "Exit non-zero when a panel's breakdown column is null in every row or "
-            "an ES|QL control has no options (label bound to a field the data lacks)."
+            "Exit non-zero when a panel's physical breakdown is null in every row, "
+            "its binding cannot be checked, or an ES|QL control has no options."
         ),
     )
     parser.add_argument(
@@ -471,6 +471,85 @@ def _null_dimension_columns(columns, values):
     ]
 
 
+def _composite_binding_probe(query, row_limit=1000):
+    """Carry physical-label presence through the rendered query's selection.
+
+    Snapshot dimensions before COALESCE hides their nulls, retaining the flags
+    through KEEP and STATS. Count them after the original filters and limits;
+    populated groups outside the rendered selection cannot verify its labels.
+    """
+    # Kibana's adapter imports this smoke module during package initialization.
+    from observability_migration.targets.kibana.emit.esql_utils import (
+        esql_identifier,
+        extract_esql_shape,
+        split_esql_pipeline,
+        split_top_level_keyword,
+    )
+
+    instrumented = []
+    fields = []
+    flags = []
+    # Preserve identifiers but discard literal/comment contents before matching
+    # function calls: a raw string containing "COALESCE(...)" is not executable.
+    literals = re.compile(r'''`(?:``|[^`])*`|"""[\s\S]*?"""|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|/\*[\s\S]*?\*/|//[^\n]*''')
+    uncommented = literals.sub(lambda m: " " if m[0].startswith(("//", "/*")) else m[0], query)
+    stages = []
+    tokens = re.compile(literals.pattern + r"|[()[\],]")
+    for stage in split_esql_pipeline(uncommented):
+        if not re.match(r"EVAL\s", stage, re.IGNORECASE):
+            stages.append(stage)
+            continue
+        # EVAL assignments run left to right. A previous assignment in the
+        # same stage can replace a grouping field before the legend uses it.
+        body = re.sub(r"^EVAL\s+", "", stage, flags=re.IGNORECASE)
+        start = depth = 0
+        for token in tokens.finditer(body):
+            if token[0] in {"(", "["}:
+                depth += 1
+            elif token[0] in {")", "]"}:
+                depth -= 1
+            elif token[0] == "," and depth == 0:
+                stages.append("EVAL " + body[start:token.start()].strip())
+                start = token.end()
+        stages.append("EVAL " + body[start:].strip())
+    for index, stage in enumerate(stages):
+        code = literals.sub(lambda m: m[0] if m[0].startswith("`") else '""', stage)
+        if re.match(r"EVAL\s", code, re.IGNORECASE) and "COALESCE" in code.upper():
+            prefix = " | ".join(re.sub(r"^(\w+)\s+", r"\1 ", part) for part in stages[:index])
+            shape = extract_esql_shape(prefix)
+            snapshots = []
+            for name in shape.group_fields:
+                if name in shape.time_fields or name in fields:
+                    continue
+                identifiers = (esql_identifier(name), "`" + name.replace("`", "``") + "`")
+                pattern = (
+                    r'COALESCE\s*\(\s*TO_STRING\s*\(\s*(?:'
+                    + "|".join(re.escape(identifier) for identifier in identifiers)
+                    + r')\s*\)\s*,'
+                )
+                if re.search(pattern, code, re.IGNORECASE):
+                    flag = f"_binding_present_{len(fields)}"
+                    while flag in query:
+                        flag += "_"
+                    fields.append(name)
+                    flags.append(flag)
+                    snapshots.append(f"{flag} = CASE({esql_identifier(name)} IS NOT NULL, 1, 0)")
+            if snapshots:
+                instrumented.append("EVAL " + ", ".join(snapshots))
+        if flags and re.match(r"KEEP\s", stage, re.IGNORECASE):
+            stage += ", " + ", ".join(flags)
+        elif flags and re.match(r"STATS\s", stage, re.IGNORECASE):
+            assignments, by = split_top_level_keyword(re.sub(r"^STATS\s+", "", stage, flags=re.IGNORECASE), "BY")
+            stage = "STATS " + assignments + ", " + ", ".join(f"{flag} = MAX({flag})" for flag in flags)
+            if by:
+                stage += " BY " + by
+        instrumented.append(stage)
+    if not fields:
+        return "", []
+    counts = ["_binding_rows = COUNT(*)"] + [f"_binding_{i} = SUM({flag})" for i, flag in enumerate(flags)]
+    return " | ".join(instrumented) + f" | LIMIT {row_limit} | STATS " + ", ".join(counts), fields
+
+
 def _all_measures_null(columns, values):
     """Rows came back but every measure in them is null.
 
@@ -573,6 +652,7 @@ def validate_esql(
     keep_values=False,
     control_values=None,
     time_window=None,
+    check_bindings=True,
 ):
     if time_window is not None:
         seconds = int(time_window.total_seconds())
@@ -630,6 +710,32 @@ def validate_esql(
         }
         if keep_values:
             result["values"] = values
+        probe_query, binding_fields = _composite_binding_probe(query, row_limit=len(values)) if check_bindings else ("", [])
+        if probe_query and values and not result["null_values"]:
+            try:
+                probe = validate_esql(
+                    es_url, probe_query, timeout, es_api_key=es_api_key, session=session,
+                    dsl_filter=dsl_filter, identifier_params=identifier_params,
+                    keep_values=True, control_values=control_values, time_window=time_window, check_bindings=False,
+                )
+                if probe["status"] != "pass":
+                    result["binding_probe_error"] = probe["error"]
+                else:
+                    counts = dict(zip(probe["columns"], (probe.get("values") or [[]])[0], strict=False))
+                    rows = counts.get("_binding_rows")
+                    if type(rows) is not int or rows != len(values) or any(
+                        type(counts.get(f"_binding_{i}")) is not int
+                        or not 0 <= counts[f"_binding_{i}"] <= rows
+                        for i in range(len(binding_fields))
+                    ):
+                        result["binding_probe_error"] = "physical label probe returned no evidence"
+                    else:
+                        result["null_columns"].extend(
+                            name for i, name in enumerate(binding_fields)
+                            if counts[f"_binding_{i}"] == 0 and name not in result["null_columns"]
+                        )
+            except (requests.RequestException, ValueError, TypeError, IndexError) as exc:
+                result["binding_probe_error"] = str(exc)
         return result
     body = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
     error = body.get("error", {})
@@ -1253,7 +1359,7 @@ def binding_gap_hint(
             control_values=control_values,
             time_window=time_window,
         )
-        if outcome["status"] != "pass":
+        if outcome["status"] != "pass" or outcome.get("binding_probe_error"):
             probe_failed = True
             continue
         if kind == "control":
@@ -1267,11 +1373,10 @@ def binding_gap_hint(
         # also names other missing fields), so nothing was proven either way.
         hint = (
             f"`{field_name}` is not on these documents, but {', '.join(f'`{name}`' for name in present)} "
-            f"exist on {index}; the query has other missing fields too. Re-migrate with --es-url "
+            f"exist on {index}; the alternative binding could not be verified "
+            "(for example, other missing fields or an unavailable probe). Re-migrate with --es-url "
             "(and --esql-index) so labels resolve against the target"
         )
-        if any(name.startswith("labels.") for name in present):
-            hint += ", or with --field-profile prometheus_native"
         return hint + "."
     if not working:
         checked = f" (checked {', '.join(f'`{name}`' for name in present)})" if present else ""
@@ -1673,10 +1778,12 @@ def inspect_dashboard(
             dict.fromkeys(name for item in validations for name in item.get("null_columns", []) or [])
         )
         null_values = bool(validations) and all(item.get("null_values") for item in validations)
+        binding_probe_errors = [item["binding_probe_error"] for item in validations if item.get("binding_probe_error")]
         result_status = (
             "fail" if failing
             else "empty" if rows == 0 or null_values
             else "null_series" if null_columns
+            else "not_runtime_checked" if binding_probe_errors
             else "pass"
         )
         result = {
@@ -1688,6 +1795,12 @@ def inspect_dashboard(
             "validation_mode": "esql",
             "checked_queries": len(queries),
         }
+        if binding_probe_errors:
+            result["binding_probe_error"] = "; ".join(binding_probe_errors)
+            result["coverage_reason"] = "physical label binding could not be checked"
+            if result_status == "not_runtime_checked":
+                not_runtime_checked_panels.append(result)
+                unexpected_runtime_gap_panels.append(result)
         if result_status == "empty" and rows:
             result["empty_reason"] = _NULL_VALUES_REASON
         peaks = {}
@@ -1829,6 +1942,9 @@ def print_panel_findings(dashboard):
         print(f"  null series: {panel['panel']} — {columns} is null in all {panel['rows']} row(s)")
         for hint in panel.get("hints", []) or []:
             print(f"    hint: {hint}")
+    for panel in dashboard.get("not_runtime_checked_panels", []) or []:
+        if panel.get("binding_probe_error"):
+            print(f"  binding not checked: {panel['panel']} — {panel['binding_probe_error']}")
     for control in dashboard.get("empty_controls", []) or []:
         failed = f" — options query failed: {control['error'].splitlines()[-1]}" if control.get("status") == "fail" else ""
         print(f"  control without options: {control['title']} (?{control['variable']}){failed}")
@@ -1869,8 +1985,12 @@ def build_summary(dashboards):
         "null_series_panels": sum(len(item.get("null_series_panels", [])) for item in dashboards),
         "unreadable_axis_panels": sum(len(item.get("unreadable_axis_panels", [])) for item in dashboards),
         "empty_controls": sum(len(item.get("empty_controls", [])) for item in dashboards),
+        "unverified_binding_panels": sum(
+            bool(panel.get("binding_probe_error")) for item in dashboards for panel in item.get("panels", [])
+        ),
         "dashboards_with_binding_gaps": sum(
             1 for item in dashboards if item.get("null_series_panels") or item.get("empty_controls")
+            or any(panel.get("binding_probe_error") for panel in item.get("panels", []))
         ),
         "screenshots_captured": sum(
             1 for item in dashboards if item.get("screenshot", {}).get("status") in {"captured", "partial"}
@@ -2064,7 +2184,8 @@ def main(verify: bool | str = True):
     if getattr(args, "fail_on_binding_gaps", False) and summary["dashboards_with_binding_gaps"]:
         failure_reasons.append(
             f"{summary['null_series_panels']} null-series panel(s), "
-            f"{summary['empty_controls']} control(s) without options"
+            f"{summary['empty_controls']} control(s) without options, "
+            f"{summary['unverified_binding_panels']} panel binding check(s) incomplete"
         )
     if args.fail_on_not_runtime_checked and summary["not_runtime_checked_panels"]:
         failure_reasons.append(f"{summary['not_runtime_checked_panels']} panel(s) not runtime-checked")

@@ -38,9 +38,13 @@ on the result contracts in `core/reporting/report.py`:
 Helpers live in `core/target_binding.py`; the Grafana `SchemaResolver` records
 the `basis` (`live_caps`, `metric_cooccurrence`, `discovered`, `profile_plan`,
 `rule_pack`, `passthrough`, `otel_default`, `promql_label`) while it resolves
-labels. Binding never changes a panel's status; post-upload smoke evidence
-(`null_series`, `control_unbound`, `control_null_param` runtime rollups) is what
-moves the verification gate. See [Target binding](../command-contract.md#target-binding).
+labels. Binding never changes a panel's translation status. A `guessed` or
+`missing` binding makes its verification gate Yellow; the verification packet
+includes `target_binding` to explain that decision. Post-upload smoke adds
+runtime evidence (`null_series`, `control_unbound`, `control_null_param`).
+Physical dimensions hidden by synthetic legends are checked before string
+folding; failed probes record `binding_probe_error` and leave the panel
+`not_runtime_checked`. See [Target binding](../command-contract.md#target-binding).
 
 ## DashboardIR
 
