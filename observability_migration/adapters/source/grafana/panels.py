@@ -6564,7 +6564,7 @@ def _build_multi_target_series_query(translations):
                 _p.expr = re.sub(rf"\b{re.escape(_old)}\b", _new, _p.expr)
         all_specs = [_s for _s in all_specs if _s.alias not in _formula_remap]
 
-    shared = _build_shared_measure_pipeline(base.index, all_specs)
+    shared = _build_shared_measure_pipeline(base.index, all_specs, preserve_series_identity=len(translations) > 1)
     if not shared:
         return None
 
@@ -6695,13 +6695,17 @@ def _build_multi_target_series_query(translations):
     if collapsed is None:
         # The KEEP is dropped downstream by _strip_dotted_group_keep when a
         # grouping field is dotted (avoids an ES|QL "Output has changed" error).
-        parts.append(
-            "| KEEP "
-            + ", ".join(
-                _esql_identifier(f)
-                for f in dict.fromkeys(output_group_fields + metric_fields)
+        # Elasticsearch adds the implicit series column after query analysis.
+        # An explicit KEEP cannot resolve it; retaining the full result preserves
+        # it for the native chart's single breakdown accessor.
+        if "_timeseries" not in output_group_fields:
+            parts.append(
+                "| KEEP "
+                + ", ".join(
+                    _esql_identifier(f)
+                    for f in dict.fromkeys(output_group_fields + metric_fields)
+                )
             )
-        )
         if "time_bucket" in output_group_fields:
             parts.append("| SORT time_bucket ASC")
     else:

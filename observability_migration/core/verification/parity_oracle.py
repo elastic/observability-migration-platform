@@ -73,6 +73,10 @@ OTEL_TO_PROM_LABELS = {
 
 
 def _canonical_label(name: str) -> str:
+    for prefix in ("prometheus.labels.", "labels."):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
     return OTEL_TO_PROM_LABELS.get(name, OTEL_TO_PROM_LABELS.get(name.lower(), name))
 
 
@@ -170,7 +174,7 @@ def _drop_constants(
     return out
 
 
-def normalize_native(data: dict, keep_labels: frozenset[str] = frozenset()) -> dict[SeriesKey, list[tuple[float, float]]]:
+def normalize_native(data: dict, keep_labels: frozenset[str] = frozenset(), *, preserve_identity: bool = False) -> dict[SeriesKey, list[tuple[float, float]]]:
     """Parse native PROMQL output: columns value/step/<labels>.
 
     Native PROMQL may return the series labels either as broken-out columns or
@@ -211,7 +215,9 @@ def normalize_native(data: dict, keep_labels: frozenset[str] = frozenset()) -> d
             continue
         labels = {name: str(row[idx]) for idx, name in label_idxs if row[idx] is not None}
         if timeseries_idx is not None:
-            labels.update(_decode_timeseries_labels(row[timeseries_idx], keep=keep_labels))
+            labels.update(_decode_timeseries_labels(row[timeseries_idx], keep=keep_labels, preserve_identity=preserve_identity))
+        if preserve_identity:
+            keep_labels |= frozenset(labels)
         bucket.setdefault(tuple(sorted(labels.items())), []).append((t, v))
     return _drop_constants([(dict(k), v) for k, v in bucket.items()], keep=keep_labels)
 
@@ -221,6 +227,8 @@ def normalize_translated(
     value_column: str | None = None,
     ignore_columns: frozenset[str] = frozenset(),
     group_columns: frozenset[str] = frozenset(),
+    keep_labels: frozenset[str] = frozenset(),
+    preserve_identity: bool = False,
 ) -> dict[SeriesKey, list[tuple[float, float]]]:
     """Parse translated ES|QL output: metric col + time_bucket + label cols.
 
@@ -254,8 +262,8 @@ def normalize_translated(
             timeseries_idx = i
             continue
         if lname.startswith("labels.") or lname.startswith("prometheus.labels."):
-            label_name = _canonical_label(lname.split(".")[-1])
-            if label_name not in PROMETHEUS_ONLY_LABELS:
+            label_name = _canonical_label(name)
+            if label_name not in PROMETHEUS_ONLY_LABELS or label_name in keep_labels:
                 explicit_labels.append((i, label_name))
             continue
         if lname == "legend":
@@ -302,7 +310,7 @@ def normalize_translated(
         ):
             continue
         canon = _canonical_label(columns[i])
-        if canon not in PROMETHEUS_ONLY_LABELS:
+        if canon not in PROMETHEUS_ONLY_LABELS or canon in keep_labels:
             label_idxs.append((i, canon))
     bucket: dict[tuple[tuple[str, str], ...], list[tuple[float, float]]] = {}
     for row in rows:
@@ -315,9 +323,11 @@ def normalize_translated(
             continue
         labels = {name: str(row[idx]) for idx, name in label_idxs if row[idx] is not None}
         if timeseries_idx is not None:
-            labels.update(_decode_timeseries_labels(row[timeseries_idx]))
+            labels.update(_decode_timeseries_labels(row[timeseries_idx], keep=keep_labels, preserve_identity=preserve_identity))
+        if preserve_identity:
+            keep_labels |= frozenset(labels)
         bucket.setdefault(tuple(sorted(labels.items())), []).append((t, v))
-    return _drop_constants([(dict(k), v) for k, v in bucket.items()])
+    return _drop_constants([(dict(k), v) for k, v in bucket.items()], keep=keep_labels)
 
 
 def _flatten_label_payload(labels: dict, prefix: str = "") -> dict[str, str]:
@@ -336,7 +346,7 @@ def _flatten_label_payload(labels: dict, prefix: str = "") -> dict[str, str]:
     return out
 
 
-def _decode_timeseries_labels(raw, keep: frozenset[str] = frozenset()) -> dict[str, str]:
+def _decode_timeseries_labels(raw, keep: frozenset[str] = frozenset(), *, preserve_identity: bool = False) -> dict[str, str]:
     """Extract comparable series labels from a TS ``_timeseries`` JSON cell.
 
     Flattens nested label objects to dotted paths, canonicalizes OTel field
@@ -351,8 +361,16 @@ def _decode_timeseries_labels(raw, keep: frozenset[str] = frozenset()) -> dict[s
     except (TypeError, ValueError):
         return {}
     labels = payload.get("labels", payload) if isinstance(payload, dict) else {}
+    if preserve_identity:
+        # A query grouping by the full TS identity must retain distinct physical
+        # dimensions, even when two names share a conventional canonical alias.
+        return {name: value for name, value in _flatten_label_payload(labels).items() if name != "__name__"}
     out: dict[str, str] = {}
-    for name, value in _flatten_label_payload(labels).items():
+    # Physical profile labels take precedence over exporter metadata aliases.
+    for name, value in sorted(
+        _flatten_label_payload(labels).items(),
+        key=lambda item: item[0].startswith(("labels.", "prometheus.labels.")),
+    ):
         canon = _canonical_label(name)
         if canon in PROMETHEUS_ONLY_LABELS and canon not in keep:
             continue
@@ -752,8 +770,10 @@ _RANGE_MACRO_RE = re.compile(
 _VAR_RANGE_SELECTOR_RE = re.compile(r"\[\s*\$[^\]]*\]")
 # One label matcher inside a ``{...}`` selector: name (op) "value".
 _MATCHER_RE = re.compile(
-    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?P<op>=~|!~|!=|=)\s*\"(?P<val>(?:[^\"\\]|\\.)*)\""
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?P<op>=~|!~|!=|=)\s*"
+    r"(?P<quote>[\"'])(?P<val>(?:\\.|(?!(?P=quote))[^\\])*)(?P=quote)"
 )
+_SELECTOR_RE = re.compile(r"\{(?:\$\{[^}]*\}|[^{}])*\}")
 
 
 def _strip_variable_matchers(expr: str) -> str:
@@ -767,7 +787,7 @@ def _strip_variable_matchers(expr: str) -> str:
     """
     out: list[str] = []
     pos = 0
-    for brace in re.finditer(r"\{[^{}]*\}", expr):
+    for brace in _SELECTOR_RE.finditer(expr):
         out.append(expr[pos:brace.start()])
         inner = brace.group(0)[1:-1]
         kept = [
@@ -1116,7 +1136,47 @@ def derive_field_map_from_translated(esql: str) -> dict[str, str]:
     return mapping
 
 
-def sanitize_source_for_oracle(expr: str, step: int) -> str:
+def _bind_source_controls(expr: str, bindings: dict | None, *, protected_literals: dict[str, str] | None = None) -> str:
+    """Apply concrete dashboard selections before removing unresolved variables.
+
+    Otherwise a restrictive target default is compared against every native
+    series, and an empty selection looks like a translation failure.
+    """
+    if not bindings:
+        return expr
+
+    def bind(match):
+        value = match.group("val")
+        variable = re.fullmatch(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)(?::[^}]+)?\})", value)
+        if not variable:
+            return match.group(0)
+        name = variable.group(1) or variable.group(2)
+        if name not in bindings:
+            return match.group(0)
+        selected = bindings[name]
+        operator = match.group("op")
+        if isinstance(selected, list):
+            values = [str(item) for item in selected]
+            value = ".*" if not values or ".*" in values else "(" + "|".join(re.escape(item) for item in values) + ")"
+            operator = "!~" if operator in {"!=", "!~"} else "=~"
+        else:
+            value = str(selected) if selected not in (None, "") else ".*"
+            if value == ".*" and operator == "=":
+                operator = "=~"
+        literal = json.dumps(value, ensure_ascii=False)
+        if protected_literals is not None:
+            # Cleanup must not reinterpret a concrete selection as a variable.
+            marker = f"__obs_bound_literal_{len(protected_literals)}__"
+            while marker in expr or marker in json.dumps(bindings):
+                marker += "_"
+            protected_literals[json.dumps(marker)] = literal
+            literal = json.dumps(marker)
+        return match.group("name") + operator + literal
+
+    return _SELECTOR_RE.sub(lambda brace: "{" + _MATCHER_RE.sub(bind, brace.group(0)[1:-1]) + "}", expr)
+
+
+def sanitize_source_for_oracle(expr: str, step: int, control_bindings: dict | None = None) -> str:
     """Make a Grafana source PromQL expression runnable by native PROMQL.
 
     Grafana panel queries embed template variables (``$job``, ``$node``) and
@@ -1132,7 +1192,9 @@ def sanitize_source_for_oracle(expr: str, step: int) -> str:
     """
     if "$" not in expr:
         return expr
-    result = _strip_variable_matchers(expr)
+    protected_literals: dict[str, str] = {}
+    result = _bind_source_controls(expr, control_bindings, protected_literals=protected_literals)
+    result = _strip_variable_matchers(result)
     result = _RANGE_MACRO_RE.sub(_DEFAULT_RANGE, result)
     result = _VAR_RANGE_SELECTOR_RE.sub(f"[{_DEFAULT_RANGE}]", result)
     # Any leftover ${var} / $var not inside a matcher (e.g. used as a scalar):
@@ -1140,6 +1202,8 @@ def sanitize_source_for_oracle(expr: str, step: int) -> str:
     # and the special $__ macros have already been handled above.
     result = re.sub(r"\$\{[A-Za-z_][A-Za-z0-9_]*(?::[^}]*)?\}", "", result)
     result = re.sub(r"\$(?!\d)[A-Za-z_][A-Za-z0-9_]*", "", result)
+    for marker, literal in protected_literals.items():
+        result = result.replace(marker, literal)
     return result
 
 
@@ -1332,9 +1396,59 @@ def run_translated(request, esql: str, tstart: str, tend: str,
     return _run_query(request, esql, params=params)
 
 
+_NON_CODE_RE = re.compile(
+    r'"""[\s\S]*?"""|"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|/\*[\s\S]*?\*/|//[^\n]*'
+)
+_TIME_BUCKET_RE = re.compile(
+    r"\btime_bucket\s*=\s*TBUCKET\(\s*("
+    r"[1-9][0-9]*\s*,\s*\?_tstart\s*,\s*\?_tend"
+    r"|[1-9][0-9]*\s*(?:ms|s|m|h|d|w|y|milliseconds?|seconds?|minutes?|hours?|days?|weeks?|years?)"
+    r")\s*\)", re.IGNORECASE,
+)
+
+
+def _composite_group_aliases(esql: str, raw: dict, groups: frozenset[str]) -> frozenset[str]:
+    """Composite display labels add no identity when all original groups survive."""
+    columns = {column["name"] for column in raw.get("columns", [])}
+    if not groups or not groups.issubset(columns):
+        return frozenset()
+    aliases = re.findall(r"\bEVAL\s+(`[^`]+`|[A-Za-z_][A-Za-z0-9_]*)\s*=\s*CONCAT\s*\(", _NON_CODE_RE.sub(" ", esql), re.IGNORECASE)
+    return frozenset(alias.strip("`") for alias in aliases) & (columns - groups)
+
+
+def _reference_time_bucket(esql: str) -> str:
+    """Translate one unambiguous emitted TS bucket to a reference-step bucket.
+
+    Let Elasticsearch choose adaptive interval widths; guessing them from gaps
+    in returned points confuses missing data with a wider interval.
+    """
+    if not re.match(r"\s*TS\s", esql, re.IGNORECASE):
+        return ""
+    code = _NON_CODE_RE.sub(" ", esql)
+    buckets = {match.group(1) for match in _TIME_BUCKET_RE.finditer(code)}
+    return f"BUCKET(step, {next(iter(buckets))})" if len(buckets) == 1 else ""
+
+
+def _bucket_native_reference(request, query: str, raw: dict, bucket: str,
+                             start_iso: str, end_iso: str) -> dict:
+    """Keep the latest reference evaluation per series in each emitted bucket."""
+    columns = [column["name"] for column in raw.get("columns", [])]
+    if not bucket or not raw.get("values") or not {"value", "step"}.issubset(columns):
+        return raw
+    labels = [name for name in columns if name not in {"value", "step"}]
+    grouping = ", ".join([f"_oracle_bucket = {bucket}", *("`" + name.replace("`", "``") + "`" for name in labels)])
+    return _run_query(
+        request, f"{query} | STATS value = LAST(value, step) BY {grouping} | RENAME _oracle_bucket AS step",
+        params=[{"_tstart": start_iso}, {"_tend": end_iso}],
+    )
+
+
+def _native_promql_query(expr: str, index: str, step: int, start_iso: str, end_iso: str) -> str:
+    return f'PROMQL index={index} step={step}s start="{start_iso}" end="{end_iso}" value=({expr})'
+
+
 def run_native_promql(request, expr: str, index: str, step: int, start_iso: str, end_iso: str) -> dict:
-    query = f'PROMQL index={index} step={step}s start="{start_iso}" end="{end_iso}" value=({expr})'
-    return _run_query(request, query)
+    return _run_query(request, _native_promql_query(expr, index, step, start_iso, end_iso))
 
 
 def data_time_bounds(request, index: str) -> tuple[str, str] | None:
@@ -1538,7 +1652,7 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
 
     # Strip Grafana template vars / range macros so native PROMQL runs against the
     # same series the translated ES|QL does (a literal ``$job`` matches nothing).
-    native_query = sanitize_source_for_oracle(source_query, step)
+    native_query = sanitize_source_for_oracle(source_query, step, control_bindings)
     if native_query != source_query:
         cmp_.notes.append("source sanitized for oracle (template vars / range macros resolved)")
     # Native PROMQL addresses real field paths. On the prometheus_native layout
@@ -1555,6 +1669,7 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
         if qualified != native_query:
             native_query = qualified
             cmp_.notes.append("source metric names qualified to the translated field paths")
+    reference_is_prometheus = False
     native_raw = run_native_promql(request, native_query, index, step, start_iso, end_iso)
     if isinstance(native_raw, dict) and native_raw.get("error"):
         # Fall back to real Prometheus rather than skipping. A skip reads as
@@ -1569,6 +1684,7 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
             )
             return cmp_
         native_raw = fallback
+        reference_is_prometheus = True
         cmp_.notes.append("reference evaluated by Prometheus (ES|QL PROMQL rejected it)")
 
     translated_raw = run_translated(request, cmp_.esql, start_iso, end_iso, control_bindings=control_bindings)
@@ -1581,21 +1697,41 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
             cmp_, native_raw, translated_raw, scalar_reductions, translated_value_column
         )
 
-    native = normalize_native(native_raw)
+    reference_bucket = _reference_time_bucket(cmp_.esql)
+    if reference_bucket and not reference_is_prometheus:
+        reference_query = _native_promql_query(native_query, index, step, start_iso, end_iso)
+        native_raw = _bucket_native_reference(
+            request, reference_query, native_raw, reference_bucket, start_iso, end_iso
+        )
+        if native_raw.get("error"):
+            cmp_.native_error = str(native_raw["error"])[:200]
+            return cmp_
+        cmp_.notes.append("reference uses the latest evaluation per series in each emitted time bucket")
+    group_columns = _translated_group_columns(cmp_.esql)
+    keep_labels = frozenset(_canonical_label(name) for name in group_columns)
+    if len(keep_labels) != len(group_columns):
+        cmp_.skipped_reason = "numeric parity cannot disambiguate distinct grouping fields that normalize to the same label"
+        return cmp_
+    preserve_identity = "_timeseries" in group_columns or any(
+        column["name"] == "_timeseries" for column in translated_raw.get("columns", [])
+    )
+    native = normalize_native(native_raw, keep_labels=keep_labels, preserve_identity=preserve_identity)
     # A translated query that is itself a native ``PROMQL ...`` command (the
     # native-passthrough degrade path) emits native-shaped ``step``/``value``/
     # ``_timeseries`` columns rather than ES|QL ``time_bucket``. Parsing it with
     # normalize_translated yields 0 series (no time_bucket) -> a false cmp=0 FAIL,
     # so decode it with the native parser instead.
     if _is_promql_passthrough(cmp_.esql):
-        translated = normalize_native(translated_raw)
+        translated = normalize_native(translated_raw, keep_labels=keep_labels, preserve_identity=preserve_identity)
         cmp_.notes.append("translated query is a native PROMQL passthrough; parsed with the native normalizer")
     else:
         translated = normalize_translated(
             translated_raw,
             value_column=translated_value_column,
-            ignore_columns=translated_ignore_columns,
-            group_columns=_translated_group_columns(cmp_.esql),
+            ignore_columns=translated_ignore_columns | _composite_group_aliases(cmp_.esql, translated_raw, group_columns),
+            group_columns=group_columns,
+            keep_labels=keep_labels,
+            preserve_identity=preserve_identity,
         )
     translated, blob_decoded = _align_blob_label_keys(translated, native_raw)
     if blob_decoded:

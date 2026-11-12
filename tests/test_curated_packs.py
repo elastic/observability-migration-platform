@@ -9308,3 +9308,19 @@ def test_747_layout_renames_are_visible_on_emitted_kpi_tiles():
     assert [p["position"]["x"] for p in panels] == [0, 8, 16, 24]
     assert [p["position"]["y"] for p in panels] == [12] * 4
 
+
+
+def test_14114_buffers_fusion_preserves_implicit_timeseries_identity():
+    resolved = resolve_pack_for_dashboard({"gnetId": 14114, "title": "PostgreSQL Exporter Quickstart and Dashboard"}, RulePackConfig())
+    panel = {
+        "id": 2, "type": "graph", "title": "Buffers",
+        "targets": [{"refId": ref, "legendFormat": legend, "expr": f"irate({metric}{{instance=~'$instance'}}[5m])"}
+                    for ref,legend,metric in [("A","buffers_alloc","pg_stat_bgwriter_buffers_alloc"), ("B","buffers_clean","pg_stat_bgwriter_buffers_clean")]],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 7},
+    }
+    emitted, result = translate_panel(panel, datasource_index="metrics-*", esql_index="metrics-*", rule_pack=resolved,
+                                      resolver=SchemaResolver(resolved, field_profile="prometheus_native"))
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    query = emitted["esql"]["query"]
+    assert "| KEEP" not in query
+    assert emitted["esql"]["breakdown"]["field"] == "_timeseries"

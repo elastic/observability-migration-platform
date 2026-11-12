@@ -532,6 +532,20 @@ def _apply_metric_kind_overrides(
             if info.get("role") != "metric":
                 continue
             kind = normalized.get(field_name)
+            if kind is None:
+                # Curated packs declare source names; profiles resolve their
+                # physical fields. Never infer aliases for arbitrary namespaces.
+                canonical = field_name
+                for prefix in ("prometheus.metrics.", "metrics.", "prometheus."):
+                    if canonical.startswith(prefix):
+                        canonical = canonical[len(prefix):]
+                        if prefix == "prometheus.":
+                            for suffix in (".value", ".counter", ".rate"):
+                                if canonical.endswith(suffix):
+                                    canonical = canonical[:-len(suffix)]
+                                    break
+                        break
+                kind = normalized.get(canonical)
             if kind in ("counter", "gauge"):
                 info["metric_kind"] = kind
                 info["kind_source"] = "override"

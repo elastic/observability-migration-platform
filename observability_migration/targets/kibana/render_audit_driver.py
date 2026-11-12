@@ -53,6 +53,7 @@ from observability_migration.targets.kibana.render_audit import (
     expects_data_by_panel,
     interaction_regression,
     metric_fields_by_panel,
+    panel_kinds_in_order,
     panel_titles_in_order,
     query_defined_columns_by_panel,
     scope_report_to_dashboard,
@@ -728,6 +729,7 @@ def run_audit_cli(
             query_columns_by_title=query_columns_by_title,
             target_fields_by_title=fields_by_title,
             panel_titles=panel_titles_in_order(report),
+            panel_kinds=panel_kinds_in_order(report),
         )
         output["elements"] = elements.to_dict()
 

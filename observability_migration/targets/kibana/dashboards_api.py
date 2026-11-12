@@ -1228,6 +1228,10 @@ def _fold_multi_metric_breakdown(layer: dict[str, Any]) -> None:
     if any(other != first for other in shared):
         return
     split = str(breakdown.get("column") or "")
+    # Bare TS aggregation adds this column after analysis. Kibana can use it
+    # as an accessor, but an EVAL/KEEP cannot refer to it in the query itself.
+    if split == "_timeseries":
+        return
     columns = [str(y["column"]) for y in ys]
     x_column = str((layer.get("x") or {}).get("column") or "")
     if not split or not x_column or {_FOLDED_SERIES_COLUMN, _FOLDED_VALUE_COLUMN} & {split, x_column, *columns}:

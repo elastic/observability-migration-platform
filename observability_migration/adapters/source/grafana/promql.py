@@ -5631,7 +5631,7 @@ def _measure_pipeline_index(index, specs) -> str:
     return index
 
 
-def _build_shared_measure_pipeline(index, specs):
+def _build_shared_measure_pipeline(index, specs, *, preserve_series_identity=False):
     if not _measure_specs_mergeable(specs):
         return None
 
@@ -5661,7 +5661,15 @@ def _build_shared_measure_pipeline(index, specs):
     base = specs[0]
     common_filters = _common_filters(specs)
     union_groups = _union_group_fields(specs)
+    # Bare time-series aggregates retain one row per physical series. Carry
+    # that implicit identity through fusion and its final KEEP/chart breakdown.
+    implicit_series = preserve_series_identity and base.source_type == "TS" and all(
+        re.match(rf"\s*{_TS_AGG_FUNC_PATTERN}\(", spec.stats_expr or "")
+        for spec in specs
+    )
     group_fields = (["time_bucket"] if base.bucket_expr else []) + union_groups
+    if implicit_series and "_timeseries" not in group_fields:
+        group_fields.append("_timeseries")
     by_parts = ([base.bucket_expr] if base.bucket_expr else []) + union_groups
     stats_terms = []
     timeseries_window = _timeseries_stats_window(specs)

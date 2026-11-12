@@ -427,6 +427,10 @@ audit below.
   needs `--es-url` too; without field caps it reports `render_error`. Do not read
   an `--elements` `render_error` on an unseeded cluster as a translator bug
   without checking whether field caps were supplied.
+- **Emitted panel metadata:** render segmentation and field attribution use the
+  final `visual_ir.title`, including curated title replacements. Chart-kind
+  checks use the final presentation and retain each occurrence when titles
+  repeat; source titles/types remain the fallback for older reports.
 - **Regression ratchet:** `render_snapshot` + `diff_render_snapshots` — the live
   per-panel outcomes must not regress vs a committed baseline.
 - **Default-state control coverage:** the local render-audit script uploads
