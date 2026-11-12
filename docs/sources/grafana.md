@@ -928,7 +928,15 @@ Offline, these candidates are guesses. On a Prometheus remote-write target
 control has no options. The migration summary's `Target binding` line reports
 such fields as `guessed` (offline, `--field-profile` omitted) or `missing`
 (live caps lack them), and post-upload smoke flags the resulting null series and
-option-less controls with a proven fix. See
+option-less controls with a proven fix. Guessed or missing required labels make
+the verification gate Yellow. Smoke checks physical labels before native
+multi-metric legend folding, so a non-null synthetic series does not conceal a
+missing instance. For bare Redis metric fields with `labels.instance`, use
+`--es-url` with a scoped `--esql-index`; a discovered
+`--field-profile prometheus_native` can retain bare metrics while selecting
+`labels.instance`. Offline, that profile plans `metrics.<name>` as well as
+`labels.*`, so selecting it without discovery does not describe every mixed
+target layout. See
 [Target binding](../command-contract.md#target-binding).
 
 ### Customizing Field Mapping via Rule Packs

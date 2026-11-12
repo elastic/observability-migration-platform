@@ -12083,7 +12083,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(migrate.apply_metadata_polish(result, enable_ai=False), {})
         self.assertIsNone(result.native_dashboard)
 
-    def test_verification_packet_marks_green_for_clean_panel(self):
+    def test_verification_packet_marks_yellow_for_guessed_label(self):
         dashboard = {
             "title": "Verified",
             "uid": "verified-1",
@@ -12106,8 +12106,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         verification = migrate.annotate_results_with_verification([result], [])
         packet = result.panel_results[0].verification_packet
-        self.assertEqual(verification["summary"]["green"], 1)
-        self.assertEqual(packet["semantic_gate"], "Green")
+        self.assertEqual(verification["summary"]["yellow"], 1)
+        self.assertEqual(packet["semantic_gate"], "Yellow")
+        self.assertEqual(packet["target_binding"]["status"], "guessed")
         self.assertEqual(packet["candidate_targets"][0]["target"], "native_esql_panel")
         self.assertEqual(packet["sample_window"]["time_from"], esql_validate.DEFAULT_TSTART_EXPR)
         self.assertEqual(packet["target_execution"]["status"], "not_run")
@@ -12324,7 +12325,8 @@ class TranslatorRegressionTests(unittest.TestCase):
         explanation = result.panel_results[0].review_explanation
         self.assertEqual(summary["mode"], "heuristic")
         self.assertEqual(explanation["mode"], "heuristic")
-        self.assertIn("validated cleanly", explanation["summary"])
+        self.assertEqual(result.panel_results[0].verification_packet["semantic_gate"], "Yellow")
+        self.assertIn("Required label fields are guessed", explanation["summary"])
         self.assertTrue(explanation["suggested_checks"])
 
     def test_review_explanations_mark_skipped_panels_as_ignored(self):

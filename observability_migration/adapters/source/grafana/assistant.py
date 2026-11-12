@@ -136,6 +136,11 @@ def build_heuristic_review_explanation(panel_result: Any, verification_packet: d
             "Translation needed a deterministic validation fix before it could run. Review the adjusted target query carefully.",
             "Translation required a deterministic validation fix.",
         )
+    elif gate == "Yellow" and (verification_packet.get("target_binding") or {}).get("status") in {"guessed", "missing"}:
+        summary = (
+            "Review recommended. Required label fields are guessed or missing on the target. "
+            "Re-run with --es-url and a scoped --esql-index, or select the matching --field-profile."
+        )
     elif gate == "Yellow":
         summary = _sanitize_short_text(
             f"Review recommended. {_first_text(losses + reasons + notes, 'The panel migrated, but the translator recorded warnings or semantic losses.')}",

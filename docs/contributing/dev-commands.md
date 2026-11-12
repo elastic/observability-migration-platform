@@ -101,6 +101,19 @@ Redis+DogStatsD fixture × `otel`, `elastic_agent`, `prometheus_native`,
 Examples:
 
 ```bash
+# Redis composite-series binding regression: emitted query through smoke.
+.venv/bin/python -m pytest tests/test_redis_composite_binding.py tests/test_target_binding.py tests/test_smoke_binding_gaps.py -q
+
+# Generated queries and all 288 readiness-state combinations (real Python code).
+.venv/bin/python -m pytest tests/test_binding_invariants.py -q
+
+# Symbolic gate contracts; optional isolated tool, outside the operator CLI.
+uvx --from crosshair-tool==0.0.113 --with-editable . crosshair check scripts/verification/binding_contracts.py --analysis_kind=PEP316 --report_all --per_condition_timeout=20 --per_path_timeout=5
+PYTHONPATH=. .venv/bin/python scripts/verification/check_binding_mutations.py
+
+# Read-only runtime counterexamples; no target indices are created.
+ES_URL=http://localhost:9200 .venv/bin/python -m pytest tests/e2e/test_composite_binding_runtime.py -q
+
 # Runtime ES|QL oracle: catches invalid emitted ES|QL that static checks miss.
 PYTHONPATH=parity-rig .venv/bin/python -m verifier.live_validate \
   --migration-out migration_output/dashboards \

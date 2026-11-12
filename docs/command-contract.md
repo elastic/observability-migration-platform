@@ -354,11 +354,25 @@ Each emitted label field is classified (worst wins per panel/control):
 `missing` means: re-run with `--es-url` (and `--esql-index`) so labels resolve
 against the target, or pass the `--field-profile` that matches your ingest.
 
+Panels with `guessed` or `missing` label bindings have a Yellow verification
+gate even when their translation is otherwise complete. Offline planning still
+writes the dashboard artifacts. The verification packet includes
+`target_binding` so a reviewer can see why target readiness is unproven.
+
 **After upload**, smoke (`--smoke`, `--smoke-report`, or
 `grafana-validate-uploaded`) checks the same thing against real data:
 
 - a panel whose result has a label/breakdown column that is null in every row
   while its values are not is reported as `null_series` (`null_series_panels`);
+- when a synthetic legend folds labels into a string using
+  `COALESCE(TO_STRING(label), "")`, smoke snapshots physical label presence
+  before conversion and counts it after the original filters and limits.
+  Nonempty legends such as `" - used"` do not hide a missing instance. Split
+  `EVAL` stages and assignments retain their evaluation order. This adds one
+  scoped query per composite panel query
+  that returns data. An unsuccessful probe records `binding_probe_error` and
+  leaves the panel `not_runtime_checked`; `--fail-on-binding-gaps` also fails
+  for these incomplete binding checks (`unverified_binding_panels`);
 - every ES|QL control's options query is run, and a control with no options
   other than the `.*` wildcard is reported in `empty_controls`, with the panels
   that bind its `?variable` and the native `PROMQL` ones among them;

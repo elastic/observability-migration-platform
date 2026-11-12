@@ -677,6 +677,8 @@ It also surfaces real Kibana render errors (e.g. `verification_exception`,
 | Canary | `tests/test_canary.py` |
 | Render audit (verdict + driver + self-test) | `tests/test_render_audit*.py` |
 | Target binding (provenance + smoke evidence) | `tests/test_target_binding.py`, `tests/test_smoke_binding_gaps.py` |
+| Composite-series physical label binding and readiness | `tests/test_redis_composite_binding.py` (actual emitted Redis query, hidden null labels, failed probes, and guessed/missing binding gates) |
+| Binding invariants and symbolic contracts | `tests/test_binding_invariants.py` (200 deterministic generated query examples; 288 readiness-state combinations), `scripts/verification/binding_contracts.py` (CrossHair 0.0.113; three gate properties), `scripts/verification/check_binding_mutations.py` (three removed-guard variants must fail). These cover the stated input domains, not all ES\|QL semantics. Live read-only cases: `tests/e2e/test_composite_binding_runtime.py`. |
 | Interaction audit (offline + scenarios) | `tests/test_interaction_*.py`, `tests/test_*_interaction_scenario.py` |
 | e2e gates (ratchet, schema, semantic, pipelines) | `tests/e2e/` |
 | Verifier gate code | `parity-rig/verifier/` |
