@@ -960,5 +960,7 @@ def test_duplicate_titles_use_each_emitted_chart_kind():
                 'StaticText "Memory Usage" <div data-test-subj="lnsMetric_value">42</div>')
     verdict = audit_dashboard_elements(snapshot, panel_titles=[title for title, _ in kinds], panel_kinds=kinds)
     assert not any("expected" in reason for reason in verdict.reasons)
-    wrong = audit_dashboard_elements(snapshot, panel_titles=[title for title, _ in kinds], panel_kinds=list(reversed(kinds)))
+    reordered = audit_dashboard_elements(snapshot, panel_titles=[title for title, _ in kinds], panel_kinds=list(reversed(kinds)))
+    assert not any("expected" in reason for reason in reordered.reasons)
+    wrong = audit_dashboard_elements(snapshot, panel_titles=[title for title, _ in kinds], panel_kinds=[("Memory Usage", "metric"), ("Memory Usage", "metric")])
     assert any("expected" in reason for reason in wrong.reasons)

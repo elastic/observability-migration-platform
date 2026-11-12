@@ -590,7 +590,8 @@ def audit_dashboard_elements(
     ``target_fields_by_title`` carry the rest of that contract — the metric a
     panel reads, and the field caps of the index it reads them from.
 
-    ``panel_kinds`` preserves occurrence-specific chart kinds when titles repeat.
+    ``panel_kinds`` preserves chart-kind counts when titles repeat, independent
+    of DOM mount order; title-only segmentation cannot associate stable IDs.
     Legacy callers may supply only the title-keyed ``expected_kind_by_title``.
 
     ``panel_titles`` is the segmentation matcher, defaulting to
@@ -652,12 +653,17 @@ def audit_dashboard_elements(
                     detail=f"{el.chart_kind or '?'}; legend={len(el.legend_entries)}; data={el.has_data}",
                 )
             )
+        # Kibana may mount equal-titled panels in a different order than the
+        # source report. Check kind multiplicity, without inventing an ID join.
+        kinds = kinds_by_title[title]
+        if el.chart_kind in kinds:
+            expected_kind = el.chart_kind
+            kinds.remove(expected_kind)
+        else:
+            expected_kind = kinds.popleft() if kinds else expected_kind_by_title.get(title, "")
         reasons += check_panel_elements(
             el,
-            expected_kind=(
-                kinds_by_title[title].popleft() if kinds_by_title[title]
-                else expected_kind_by_title.get(title, "")
-            ),
+            expected_kind=expected_kind,
             expects_breakdown=title in breakdown,
         )
     for title in unmatched:
