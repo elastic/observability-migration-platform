@@ -419,6 +419,12 @@ query's row cap (1000 when it states none) by the number of metrics, up to
 ES|QL's 10000. Layers whose metrics differ in format or axis are not folded,
 since one value column carries one format.
 
+Layers broken down by the implicit TS `_timeseries` column also keep their
+multiple Y metrics and single breakdown. Elasticsearch adds that column after
+analysis: Kibana can use the returned column as an accessor, but appending an
+`EVAL` or explicit projection that names it fails. These layers retain native
+colouring instead of folding metric/series pairs into separate colour terms.
+
 ## Current Structural Gaps
 
 - Source-aware emitted-query validation is still source-located because it depends on Grafana- and Datadog-specific query rewrite logic.

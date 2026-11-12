@@ -3391,3 +3391,13 @@ def test_control_hydration_reports_each_seeded_control():
 
     assert bound == {"instance": ["a", "b"]}
     assert len(changes) == 1 and "control 'instance'" in changes[0] and "2 live value(s)" in changes[0]
+
+
+def test_implicit_timeseries_breakdown_keeps_multi_metric_query_intact():
+    from observability_migration.targets.kibana.dashboards_api import _cfg_xy
+    query = "TS metrics-* | STATS alloc=IRATE(alloc), clean=IRATE(clean) BY time_bucket=TBUCKET(5m)"
+    cfg = {"type": "line", "dimension": {"field": "time_bucket"}, "metrics": [{"field": "alloc"}, {"field": "clean"}], "breakdown": {"field": "_timeseries"}}
+    layer = _cfg_xy("Buffers", cfg, query)["layers"][0]
+    assert layer["data_source"]["query"] == query
+    assert [y["column"] for y in layer["y"]] == ["alloc", "clean"]
+    assert layer["breakdown_by"]["column"] == "_timeseries"

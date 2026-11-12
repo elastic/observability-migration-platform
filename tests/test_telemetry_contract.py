@@ -2682,6 +2682,35 @@ class MetricKindOverrideTests(unittest.TestCase):
             fields["kube_pod_container_resource_requests"]["metric_kind"], "counter"
         )
 
+    def test_source_declaration_reaches_resolved_profile_fields(self):
+        for field in (
+            "metrics.pg_stat_activity_count",
+            "prometheus.metrics.pg_stat_activity_count",
+            "prometheus.pg_stat_activity_count.value",
+            "prometheus.pg_stat_activity_count.counter",
+            "prometheus.pg_stat_activity_count.rate",
+        ):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as tmpdir:
+                artifact_dir = self._write_packet(tmpdir, f"TS metrics-* | STATS value = AVG(RATE({field}))")
+                contract = build_telemetry_contract(artifact_dir, metric_kind_overrides={"pg_stat_activity_count": "gauge"})
+                self.assertEqual(contract["streams"]["metrics-*"]["fields"][field]["metric_kind"], "gauge")
+                self.assertEqual(contract["streams"]["metrics-*"]["fields"][field]["kind_source"], "override")
+
+    def test_source_declaration_does_not_match_arbitrary_namespaces(self):
+        for field in ("custom.pg_stat_activity_count", "metrics.other.pg_stat_activity_count"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as tmpdir:
+                artifact_dir = self._write_packet(tmpdir, f"TS metrics-* | STATS value = AVG(RATE({field}))")
+                contract = build_telemetry_contract(artifact_dir, metric_kind_overrides={"pg_stat_activity_count": "gauge"})
+                self.assertEqual(contract["streams"]["metrics-*"]["fields"][field]["metric_kind"], "counter")
+
+    def test_exact_physical_override_wins_over_source_declaration(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = self._write_packet(tmpdir, "FROM metrics-* | STATS value = AVG(metrics.pg_stat_activity_count)")
+            contract = build_telemetry_contract(artifact_dir, metric_kind_overrides={
+                "pg_stat_activity_count": "gauge", "metrics.pg_stat_activity_count": "counter",
+            })
+        self.assertEqual(contract["streams"]["metrics-*"]["fields"]["metrics.pg_stat_activity_count"]["metric_kind"], "counter")
+
     def test_override_ignores_dimension_fields(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = self._write_packet(

@@ -1664,6 +1664,12 @@ contract produced zero control fields. The second case used to seed
 seeded documents matched no control selection and every filtered panel rendered
 empty.
 
+Metric-kind declarations in rule packs use canonical metric names. The seeder
+applies them to recognized `metrics.*`, `prometheus.metrics.*`, and typed
+`prometheus.<metric>.value` / `.counter` / `.rate` fields too. An explicit
+physical-field override takes precedence. Seed from the final migrated artifacts
+when live discovery has added label requirements.
+
 The JSON report carries `ingested`, `errors`, `docs_per_stream`, and — when
 relevant — two diagnostic keys:
 
@@ -1796,6 +1802,16 @@ then diffs per bucket. Verdicts are `STRICT_PASS` (≤1% relative error),
 or relative error above 25%), `SKIP`, or `ERROR`. **Do not treat `SHAPE_PASS`
 as numeric proof** — read `max_relative_error` on the row. Exit code `0`
 includes `SHAPE_PASS`; only `FAIL` / `SOURCE_FAIL` / `ERROR` fail the run.
+
+For a recognized `TS` time bucket, the reference keeps its latest evaluation
+per series within the same bucket, using Elasticsearch's interval selection.
+This avoids comparing an adaptive dashboard bucket with an unrelated oracle
+step. Requested instance/job grouping remains part of series identity. Concrete
+dashboard control selections also constrain the source reference; unresolved
+variables retain the match-all fallback. Distinct grouping fields that collapse
+to one canonical label are reported as `SKIP` because attribution is ambiguous.
+These checks do not establish identical sliding-window semantics or coverage
+beyond the query engine's result limits.
 
 For **Datadog panels**, non-PromQL panels, or clusters without native PROMQL,
 the command degrades to a `STRUCTURAL` row (semantic gate only) — clearly labeled

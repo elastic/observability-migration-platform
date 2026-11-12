@@ -923,3 +923,44 @@ def test_element_audit_honours_per_panel_field_caps():
         target_fields_by_title={"Log Events": {"message", "@timestamp"}},
     )
     assert verdict.panels[0].error_class == "render_error"
+
+
+def test_render_metadata_uses_final_visual_title_and_kind():
+    from observability_migration.targets.kibana.render_audit import (
+        breakdown_fields_by_panel,
+        expects_data_by_panel,
+        metric_fields_by_panel,
+        panel_titles_in_order,
+        query_defined_columns_by_panel,
+        source_indices_by_panel,
+    )
+    report = {"dashboards": [{"panels": [{
+        "title": "Idle CPU", "kibana_type": "metric",
+        "visual_ir": {"title": "CPU Busy", "presentation": {"config": {"type": "line"}}},
+        "yaml_panel": {"esql": {"query": "FROM metrics-* | STATS value = AVG(cpu) BY host", "breakdown": {"field": "host"}}},
+    }]}]}
+    assert panel_titles_in_order(report) == ["CPU Busy"]
+    assert expected_kind_by_panel(report) == {"CPU Busy": "xy"}
+    assert source_indices_by_panel(report) == {"CPU Busy": ["metrics-*"]}
+    assert metric_fields_by_panel(report) == {"CPU Busy": ["cpu"]}
+    assert query_defined_columns_by_panel(report) == {"CPU Busy": ["value"]}
+    assert breakdown_fields_by_panel(report) == {"CPU Busy": ["host"]}
+    assert expects_data_by_panel(report) == {"CPU Busy"}
+
+
+def test_duplicate_titles_use_each_emitted_chart_kind():
+    from observability_migration.targets.kibana.render_audit import panel_kinds_in_order
+    report = {"dashboards": [{"panels": [
+        {"title": "Memory Usage", "kibana_type": "line"},
+        {"title": "Memory Usage", "kibana_type": "metric"},
+    ]}]}
+    kinds = panel_kinds_in_order(report)
+    assert kinds == [("Memory Usage", "xy"), ("Memory Usage", "metric")]
+    snapshot = ('StaticText "Memory Usage" StaticText "Chart type" StaticText ":" StaticText "line chart" '
+                'StaticText "Memory Usage" <div data-test-subj="lnsMetric_value">42</div>')
+    verdict = audit_dashboard_elements(snapshot, panel_titles=[title for title, _ in kinds], panel_kinds=kinds)
+    assert not any("expected" in reason for reason in verdict.reasons)
+    reordered = audit_dashboard_elements(snapshot, panel_titles=[title for title, _ in kinds], panel_kinds=list(reversed(kinds)))
+    assert not any("expected" in reason for reason in reordered.reasons)
+    wrong = audit_dashboard_elements(snapshot, panel_titles=[title for title, _ in kinds], panel_kinds=[("Memory Usage", "metric"), ("Memory Usage", "metric")])
+    assert any("expected" in reason for reason in wrong.reasons)

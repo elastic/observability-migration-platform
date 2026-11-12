@@ -178,11 +178,19 @@ def _stats_aliases(query: str) -> set[str]:
 
 def _final_output_columns(query: str) -> set[str]:
     cols: set[str] = set()
-    for cmd in split_esql_pipeline(query):
+    commands = split_esql_pipeline(query)
+    first_ts_stats = bool(commands and commands[0].lower().startswith("ts "))
+    for cmd in commands:
         cl = cmd.lower()
         if cl.startswith("stats "):
             body, by_text = split_top_level_keyword(cmd[6:].strip(), "BY")
             cols = set()
+            if first_ts_stats and all(
+                re.match(r"(?:RATE|IRATE|INCREASE|AVG_OVER_TIME|SUM_OVER_TIME|MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)\s*\(", split_top_level_assignment(term)[1].strip(), re.IGNORECASE)
+                for term in _split_csv_top_level(body)
+            ):
+                cols.add("_timeseries")
+            first_ts_stats = False
             for part in _split_csv_top_level(body):
                 alias, _ = split_top_level_assignment(part)
                 if alias:
@@ -283,7 +291,7 @@ def _assert_chart_spec_matches_query(esql: dict) -> None:
     by_ids = _by_identifiers(query)
     metric_aliases = _stats_aliases(query)
     for field in _breakdown_fields(esql):
-        assert field in by_ids or field == "time_bucket", (
+        assert field in by_ids or field == "time_bucket" or (field == "_timeseries" and field in output), (
             f"breakdown {field!r} is not a BY dimension {sorted(by_ids)}; "
             f"metric aliases={sorted(metric_aliases)}; query=\n{query}"
         )

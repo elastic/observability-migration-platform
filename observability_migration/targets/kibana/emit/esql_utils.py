@@ -235,6 +235,7 @@ def _eval_alias_is_series_identity(expr):
 def extract_esql_shape(esql):
     commands = split_esql_pipeline(esql)
     shape = ESQLShape()
+    first_ts_stats = bool(commands and commands[0].lower().startswith("ts "))
     for command in commands:
         lower_command = command.lower()
         if lower_command.startswith("stats "):
@@ -246,6 +247,11 @@ def extract_esql_shape(esql):
                 if field_name:
                     metric_fields.append(field_name)
             group_fields = []
+            implicit_series = first_ts_stats and all(
+                re.match(r"(?:RATE|IRATE|INCREASE|AVG_OVER_TIME|SUM_OVER_TIME|MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)\s*\(", split_top_level_assignment(term)[1].strip(), re.IGNORECASE)
+                for term in _split_top_level_csv(assignments_text)
+            )
+            first_ts_stats = False
             time_fields = []
             for part in _split_top_level_csv(by_text):
                 alias, expr = split_top_level_assignment(part)
@@ -255,6 +261,8 @@ def extract_esql_shape(esql):
                 group_fields.append(field_name)
                 if is_time_like_output_field(field_name) or is_time_bucket_expression(expr or field_name):
                     time_fields.append(field_name)
+            if implicit_series and "_timeseries" not in group_fields:
+                group_fields.append("_timeseries")
             shape = ESQLShape(
                 metric_fields=metric_fields,
                 group_fields=group_fields,

@@ -130,3 +130,11 @@ def test_extract_esql_shape_concat_eval_is_group_not_metric():
     assert "series_group" in shape.group_fields
     assert "series_group" not in shape.metric_fields
 
+
+
+def test_bare_ts_output_includes_implicit_identity_until_projected_away():
+    query = "TS m | STATS a=IRATE(a), b=IRATE(b) BY time_bucket=TBUCKET(5m)"
+    assert extract_esql_shape(query).group_fields == ["time_bucket", "_timeseries"]
+    assert "_timeseries" not in extract_esql_shape(query + " | KEEP time_bucket,a,b").projected_fields
+    assert "_timeseries" not in extract_esql_shape(query + " | STATS a=SUM(a) BY time_bucket").group_fields
+    assert "_timeseries" not in extract_esql_shape(query.replace("IRATE(a)", "SUM(IRATE(a))")).group_fields

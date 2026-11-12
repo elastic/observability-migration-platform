@@ -1276,7 +1276,7 @@ class PromqlPassthroughOracleTests(unittest.TestCase):
         ``params=[{_tstart},{_tend}]`` -- route on that so a PROMQL-passthrough
         *translated* query is still served the translated payload."""
         def request(method, path, body=None, content_type="application/json"):
-            is_translated = isinstance(body, dict) and "params" in body
+            is_translated = isinstance(body, dict) and "params" in body and "STATS value = LAST(value, step)" not in body.get("query", "")
             return translated_data if is_translated else native_data
         return request
 
@@ -1658,3 +1658,106 @@ def test_negated_literal_matchers_also_treat_an_absent_label_as_empty():
     assert eq == 'release == "prod"'
 
 
+
+
+def test_compare_preserves_instance_group_identity():
+    """A last-write-wins instance scrub must not hide a swapped series."""
+    dates = [f"2026-01-01T00:0{i}:00Z" for i in range(5)]
+    native = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"}, {"name": "instance", "type": "keyword"}],
+              "values": [[value, date, instance] for date in dates for instance, value in [("a", 10), ("b", 100)]]}
+    translated = {"columns": [{"name": "m", "type": "double"}, {"name": "time_bucket", "type": "date"}, {"name": "labels.instance", "type": "keyword"}],
+                  "values": [[value, date, instance] for date in dates for instance, value in [("a", 10), ("b", 100)]]}
+    def compare():
+        return po.compare_panel(lambda *args: native if args[2]["query"].startswith("PROMQL") else translated,
+                                source_query="sum(m) by (instance)",
+                                translated_query="TS metrics-* | STATS m = SUM(m) BY time_bucket = TBUCKET(1m), labels.instance",
+                                index="metrics-*", step=60, start_iso=dates[0], end_iso=dates[-1])
+    correct = compare()
+    assert correct.common_series == 2
+    assert correct.verdict() == "STRICT_PASS"
+    for row in translated["values"]:
+        if row[2] == "a":
+            row[0] = 100
+    assert compare().verdict() == "FAIL"
+
+
+def test_reference_bucket_ignores_literals_comments_and_ambiguous_grids():
+    assert po._reference_time_bucket("TS m | STATS x=AVG(x) BY time_bucket=TBUCKET(75, ?_tstart, ?_tend)") == "BUCKET(step, 75, ?_tstart, ?_tend)"
+    assert po._reference_time_bucket('TS m | EVAL text="time_bucket=TBUCKET(5m)"') == ""
+    assert po._reference_time_bucket("TS m /* time_bucket=TBUCKET(5m) */ | STATS x=AVG(x)") == ""
+    assert po._reference_time_bucket("TS m | STATS x=AVG(x) BY time_bucket=TBUCKET(5m) | STATS x=AVG(x) BY time_bucket=TBUCKET(1h)") == ""
+
+
+def test_bucket_native_reference_preserves_each_label_and_uses_latest_evaluation():
+    calls = []
+    raw = {"columns": [{"name": name} for name in ("value", "step", "instance", "db")], "values": [[1, "2026-01-01T00:00:15Z", "a", "db0"]]}
+    def request(*args):
+        calls.append(args[2])
+        return raw
+    assert po._bucket_native_reference(request, "PROMQL value=(m)", raw, "BUCKET(step, 1m)", "start", "end") is raw
+    assert calls[0]["query"].endswith("STATS value = LAST(value, step) BY _oracle_bucket = BUCKET(step, 1m), `instance`, `db` | RENAME _oracle_bucket AS step")
+    assert calls[0]["params"] == [{"_tstart": "start"}, {"_tend": "end"}]
+
+
+def test_composite_display_group_is_redundant_only_when_original_groups_survive():
+    query = 'TS m | STATS v=AVG(m) BY time_bucket=TBUCKET(1m), name,type | EVAL series_group=CONCAT(name," / ",type)'
+    raw = {"columns": [{"name": n} for n in ("time_bucket", "name", "type", "v", "series_group")]}
+    assert po._composite_group_aliases(query, raw, frozenset({"name", "type"})) == {"series_group"}
+    assert not po._composite_group_aliases(query, raw, frozenset({"missing"}))
+
+
+def test_canonical_alias_collision_cannot_hide_wrong_instance_values():
+    dates = [f"2026-01-01T00:0{i}:00Z" for i in range(5)]
+    native = {"columns": [{"name": n, "type": t} for n,t in [("value","double"),("step","date"),("instance","keyword"),("host.name","keyword")]],
+              "values": [[v,date,i,"collector"] for date in dates for i,v in [("a",10),("b",100)]]}
+    translated = {"columns": [{"name": n, "type": t} for n,t in [("m","double"),("time_bucket","date"),("labels.instance","keyword"),("host.name","keyword")]],
+                  "values": [[v,date,i,"collector"] for date in dates for i,v in [("a",9999),("b",100)]]}
+    result = po.compare_panel(lambda *args: native if args[2]["query"].startswith("PROMQL") else translated,
+                              source_query='sum by(instance, "host.name") (m)',
+                              translated_query="TS metrics-* | STATS m=SUM(m) BY time_bucket=TBUCKET(1m), labels.instance, host.name",
+                              index="metrics-*", step=60, start_iso=dates[0], end_iso=dates[-1])
+    assert result.verdict() == "SKIP"
+    assert "cannot disambiguate" in result.skipped_reason
+    assert result.compared_points == 0
+
+
+def test_source_reference_uses_same_restrictive_control_selection():
+    source = 'irate(m{instance="$node",device=~"$diskdevices",mode="user"}[5m])'
+    bound = po._bind_source_controls(source, {"node": ".*", "diskdevices": "sd[a-z]+"})
+    assert bound == 'irate(m{instance=~".*",device=~"sd[a-z]+",mode="user"}[5m])'
+    assert "$" not in po.sanitize_source_for_oracle(bound, 15)
+    assert po._bind_source_controls('m{db=~"$db"}', {"db": ["db.1", "db2"]}) == 'm{db=~' + json.dumps(r"(db\.1|db2)") + '}'
+    assert po._bind_source_controls("m{db=~'${db:regex}',state='idle'}", {"db": "db1"}) == "m{db=~\"db1\",state='idle'}"
+    assert po.sanitize_source_for_oracle("m{db=~'$db',state='idle'}", 15) == "m{state='idle'}"
+
+
+def test_bound_dollars_survive_unresolved_variable_cleanup():
+    for selection in ("^prod$", "tenant$blue", "café") :
+        sanitized = po.sanitize_source_for_oracle('m{db=~"$db",state="idle"}', 15, {"db": selection})
+        matcher = next(po._MATCHER_RE.finditer(sanitized))
+        assert matcher.group("name") == "db"
+        assert "\\u" not in sanitized
+        assert json.loads('"' + matcher.group("val") + '"') == selection
+
+
+def test_full_timeseries_group_cannot_scrub_a_wrong_instance():
+    dates = [f"2026-01-01T00:0{i}:00Z" for i in range(5)]
+    def payload(translated):
+        return {"columns": [{"name": n,"type":t} for n,t in [("m" if translated else "value","double"),("time_bucket" if translated else "step","date"),("_timeseries","keyword")]],
+                "values": [[9999 if translated and instance == "a" else value, date, json.dumps({"instance": instance,"host.name":"collector"})]
+                           for date in dates for instance,value in [("a",10),("b",100)]]}
+    result = po.compare_panel(lambda *args: payload(not args[2]["query"].startswith("PROMQL")),
+                              source_query="m", translated_query="TS metrics-* | STATS m=AVG(m) BY time_bucket=TBUCKET(1m), _timeseries",
+                              index="metrics-*", step=60, start_iso=dates[0], end_iso=dates[-1])
+    assert result.common_series == 2
+    assert result.verdict() == "FAIL"
+
+
+def test_passthrough_preserves_same_full_identity_on_both_sides():
+    dates = [f"2026-01-01T00:0{i}:00Z" for i in range(5)]
+    raw = {"columns": [{"name": n,"type":t} for n,t in [("value","double"),("step","date"),("_timeseries","keyword")]],
+           "values": [[100,date,json.dumps({"instance":instance,"host.name":"collector"})] for date in dates for instance in ("a","b")]}
+    result = po.compare_panel(lambda *args: raw, source_query="m", translated_query="PROMQL index=metrics-* step=1m value=(m)",
+                              index="metrics-*",step=60,start_iso=dates[0],end_iso=dates[-1])
+    assert result.common_series == 2
+    assert result.verdict() == "STRICT_PASS"

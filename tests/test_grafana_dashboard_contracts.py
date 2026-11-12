@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import unittest
 
 from observability_migration.adapters.source.grafana.panels import (
@@ -92,11 +93,18 @@ def _final_output_columns(query: str) -> set[str]:
         return set()
 
     cols: set[str] = set()
+    first_ts_stats = commands[0].lower().startswith("ts ")
     for cmd in commands:
         cl = cmd.lower()
         if cl.startswith("stats "):
             body, by_text = split_top_level_keyword(cmd[6:].strip(), "BY")
             cols = set()
+            if first_ts_stats and all(
+                re.match(r"(?:RATE|IRATE|INCREASE|AVG_OVER_TIME|SUM_OVER_TIME|MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)\s*\(", split_top_level_assignment(term)[1].strip(), re.IGNORECASE)
+                for term in _split_csv_top_level(body)
+            ):
+                cols.add("_timeseries")
+            first_ts_stats = False
             for part in _split_csv_top_level(body):
                 alias, _ = split_top_level_assignment(part)
                 if alias:

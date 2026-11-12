@@ -540,6 +540,11 @@ lint_migration_artifacts(Path("migration_output/dashboards"))
 
 ### Data Setup
 
+Use final migration artifacts for seeding after live discovery changes their
+label requirements. For the comparator's read-only bucket/instance regression,
+run `ES_URL="$ELASTICSEARCH_ENDPOINT" .venv/bin/pytest
+tests/e2e/test_parity_bucket_runtime.py`; add `ES_API_KEY` when required.
+
 For new use, prefer the package-native
 [`obs-migrate seed-sample-data`](../command-contract.md#seed-sample-data) /
 [`obs-migrate remove-sample-data`](../command-contract.md#remove-sample-data)

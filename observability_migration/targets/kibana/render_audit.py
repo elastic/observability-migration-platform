@@ -20,6 +20,7 @@ Grafana and Datadog dashboards alike.
 from __future__ import annotations
 
 import re
+from collections import defaultdict, deque
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 
@@ -569,6 +570,7 @@ def audit_dashboard_elements(
     metrics_by_title: dict[str, list[str]] | None = None,
     target_fields_by_title: dict[str, set[str] | None] | None = None,
     panel_titles: Iterable[str] | None = None,
+    panel_kinds: Iterable[tuple[str, str]] | None = None,
 ) -> RenderVerdict:
     """Per-panel element audit of a whole-dashboard snapshot.
 
@@ -588,6 +590,10 @@ def audit_dashboard_elements(
     ``target_fields_by_title`` carry the rest of that contract — the metric a
     panel reads, and the field caps of the index it reads them from.
 
+    ``panel_kinds`` preserves chart-kind counts when titles repeat, independent
+    of DOM mount order; title-only segmentation cannot associate stable IDs.
+    Legacy callers may supply only the title-keyed ``expected_kind_by_title``.
+
     ``panel_titles`` is the segmentation matcher, defaulting to
     ``expected_kind_by_title``'s keys. Callers holding a migration report pass
     :func:`panel_titles_in_order` instead, which keeps a dashboard's duplicate
@@ -596,6 +602,9 @@ def audit_dashboard_elements(
     how many panels the dashboard has.
     """
     expected_kind_by_title = expected_kind_by_title or {}
+    kinds_by_title: dict[str, deque[str]] = defaultdict(deque)
+    for title, kind in panel_kinds or ():
+        kinds_by_title[title].append(kind)
     breakdown_by_title = breakdown_by_title or {}
     metrics_by_title = metrics_by_title or {}
     query_columns_by_title = query_columns_by_title or {}
@@ -644,9 +653,17 @@ def audit_dashboard_elements(
                     detail=f"{el.chart_kind or '?'}; legend={len(el.legend_entries)}; data={el.has_data}",
                 )
             )
+        # Kibana may mount equal-titled panels in a different order than the
+        # source report. Check kind multiplicity, without inventing an ID join.
+        kinds = kinds_by_title[title]
+        if el.chart_kind in kinds:
+            expected_kind = el.chart_kind
+            kinds.remove(expected_kind)
+        else:
+            expected_kind = kinds.popleft() if kinds else expected_kind_by_title.get(title, "")
         reasons += check_panel_elements(
             el,
-            expected_kind=expected_kind_by_title.get(title, ""),
+            expected_kind=expected_kind,
             expects_breakdown=title in breakdown,
         )
     for title in unmatched:
@@ -984,6 +1001,14 @@ def classify_render_per_panel(
     return verdict
 
 
+def _rendered_panel_title(panel: dict) -> str:
+    """Use the emitted title, including curated replacements, as the DOM key."""
+    visual = panel.get("visual_ir")
+    if isinstance(visual, dict) and visual.get("title") is not None:
+        return str(visual["title"])
+    return str(panel.get("title") or "")
+
+
 def breakdown_fields_by_panel(report: dict) -> dict[str, list[str]]:
     """Extract each panel's breakdown/group source fields from a migration_report.
 
@@ -996,7 +1021,7 @@ def breakdown_fields_by_panel(report: dict) -> dict[str, list[str]]:
         for panel in dashboard.get("panels", []):
             if not isinstance(panel, dict):
                 continue
-            title = str(panel.get("title") or "")
+            title = _rendered_panel_title(panel)
             esql = (panel.get("yaml_panel") or {}).get("esql") if isinstance(panel.get("yaml_panel"), dict) else {}
             esql = esql if isinstance(esql, dict) else {}
             fields: list[str] = []
@@ -1229,7 +1254,7 @@ def _by_panel_title(
             values = extract(panel)
             if not values:
                 continue
-            title = str(panel.get("title") or "")
+            title = _rendered_panel_title(panel)
             merged = out.setdefault(title, [])
             merged.extend(value for value in values if value not in merged)
     return out
@@ -1361,21 +1386,30 @@ def _iter_kinded_panels(report: dict) -> Iterator[tuple[str, str]]:
         for panel in dashboard.get("panels", []):
             if not isinstance(panel, dict) or panel.get("status") == "skipped":
                 continue
-            etype = str(panel.get("kibana_type") or "").lower()
+            visual = panel.get("visual_ir")
+            visual = visual if isinstance(visual, dict) else {}
+            presentation = visual.get("presentation") or {}
+            config = presentation.get("config") or {}
+            etype = str(config.get("type") or panel.get("kibana_type") or "").lower()
             if not etype:
                 yaml_panel = panel.get("yaml_panel") if isinstance(panel.get("yaml_panel"), dict) else {}
                 esql = yaml_panel.get("esql") if isinstance(yaml_panel.get("esql"), dict) else {}
                 etype = str((esql or {}).get("type") or "").lower()
             if etype:
-                yield str(panel.get("title") or ""), _ESQL_TYPE_TO_KIND.get(etype, etype)
+                yield _rendered_panel_title(panel), _ESQL_TYPE_TO_KIND.get(etype, etype)
+
+
+def panel_kinds_in_order(report: dict) -> list[tuple[str, str]]:
+    """Emitted titles and kinds, retaining each same-titled panel occurrence."""
+    return list(_iter_kinded_panels(report))
 
 
 def expected_kind_by_panel(report: dict) -> dict[str, str]:
     """Map each panel title to the normalized chart kind to expect in the render.
 
-    Prefers the report's ``kibana_type`` (always present), falling back to the
-    emitted YAML ``esql.type`` when a report doesn't carry it. Skipped panels are
-    excluded."""
+    Prefers the final visual presentation, then ``kibana_type``, then emitted
+    YAML ``esql.type``. Skipped panels are excluded. For duplicate titles use
+    :func:`panel_kinds_in_order` to retain occurrence-specific kinds."""
     return dict(_iter_kinded_panels(report))
 
 
@@ -1606,5 +1640,5 @@ def expects_data_by_panel(report: dict) -> set[str]:
             query = str((esql or {}).get("query") or panel.get("esql_query") or "").strip()
             kibana_type = str(panel.get("kibana_type") or (esql or {}).get("type") or "").lower()
             if query and kibana_type != "markdown":
-                titles.add(str(panel.get("title") or ""))
+                titles.add(_rendered_panel_title(panel))
     return titles
