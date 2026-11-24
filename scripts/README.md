@@ -105,7 +105,9 @@ and reporting a clean pass over nothing.
 - `fetch_dashboards_api_schema.py` — refresh/check the pinned Kibana Dashboards
   API OpenAPI bundle (`docs/dashboards/kibana_dashboards_api.openapi.yaml`);
   CI uses `make check-native-schema` against the committed file; intentional
-  bumps use `make refresh-native-schema` with `--require-full-schema`
+  bumps use `make refresh-native-schema` with `--require-full-schema`, which
+  fetches Kibana's published Serverless bundle and keeps only the dashboard
+  operations
 - `generate_telemetry_contract.py` — emit the telemetry field contract
 
 ### Release and repo hygiene
