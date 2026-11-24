@@ -23,9 +23,10 @@ Dashboard authoring flow for local migration work:
   This is the schema authority for what the typed upload path may emit.
   Refresh with `make refresh-native-schema` (or
   `.venv/bin/python scripts/fetch_dashboards_api_schema.py --require-full-schema`)
-  and commit the result when intentionally bumping the pin. The Dashboards API
-  may still ship full schemas outside the standard Kibana OpenAPI bundle, so
-  the refresh URL defaults to Elastic's hosted Dashboards API spec.
+  and commit the result when intentionally bumping the pin. The refresh
+  downloads Kibana's published Serverless OpenAPI bundle
+  (`oas_docs/output/kibana.serverless.yaml` on Kibana `main`) and keeps only the
+  `/api/dashboards` operations and the components they reference.
 
 - `make check-native-schema`
   CI-friendly validation of the **committed** OpenAPI pin above

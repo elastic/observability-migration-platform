@@ -504,9 +504,12 @@ internal `DashboardIR.to_yaml_dict()` dict shape even though no YAML file is
 ever written. The native upload schema authority is the committed OpenAPI pin
 `docs/dashboards/kibana_dashboards_api.openapi.yaml`. `make check-native-schema`
 validates that pin offline (`--require-full-schema`); `make refresh-native-schema`
-re-fetches Elastic's hosted Dashboards API bundle and rewrites the pin for an
-intentional bump (the standard Kibana OpenAPI bundle may still contain
-redirect-only shells).
+re-fetches Kibana's published Serverless OpenAPI bundle
+(`oas_docs/output/kibana.serverless.yaml` on Kibana `main`), keeps only the
+`/api/dashboards` operations and the components they reference, and rewrites
+the pin for an intentional bump. Bundles from Kibana branches that predate the
+full Dashboards operations contain redirect-only shells, and
+`--require-full-schema` rejects them.
 
 **The dashboard-YAML lint and compiled-layout stages were removed**, together
 with `obs-migrate compile` and `migrate --compile` / `--legacy-import`. The

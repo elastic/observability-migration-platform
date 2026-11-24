@@ -92,7 +92,7 @@ Generated / pinned files tracked in this repository:
   `DashboardIR.to_yaml_dict()` dict shape.
 - `docs/dashboards/kibana_dashboards_api.openapi.yaml` — pinned Kibana
   Dashboards API OpenAPI bundle for `/api/dashboards`. Refresh with
-  `make refresh-native-schema` (from Elastic's hosted Dashboards API spec)
+  `make refresh-native-schema` (from Kibana's published Serverless OpenAPI bundle)
   and commit intentional bumps. Validated offline by `make check-native-schema`.
 
 `kb-dashboard-core` remains the upstream source of the tracked JSON **dict-shape
